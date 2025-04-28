@@ -15,9 +15,9 @@ const AIOverlay = ({ isOpen, onClose, onListen, isListening }) => {
   const {
     generateResponse,
     isModelLoaded,
-    isLoading,
+    isLoading, // Make sure this is destructured
     downloadModel,
-    modelProgress,
+    downloadProgress,
     statusMessage,
   } = useLLM();
   const {
@@ -232,10 +232,10 @@ const AIOverlay = ({ isOpen, onClose, onListen, isListening }) => {
                   <div className="progress-bar">
                     <div
                       className="progress-fill"
-                      style={{ width: `${modelProgress}%` }}
+                      style={{ width: `${downloadProgress}%` }} // Use downloadProgress
                     ></div>
                   </div>
-                  <div className="progress-text">{modelProgress}%</div>
+                  <div className="progress-text">{downloadProgress}%</div> // Use downloadProgress
                 </div>
                 <p className="download-info">
                   Please wait while the AI model downloads...
