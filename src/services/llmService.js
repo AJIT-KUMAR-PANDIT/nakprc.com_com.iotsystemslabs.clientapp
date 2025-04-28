@@ -19,10 +19,11 @@ export const useLLM = () => {
     checkModelExists();
   }, []);
   
+  // Enhance the checkModelExists function to be more robust
   const checkModelExists = async () => {
     try {
       if (isPlatform('capacitor')) {
-        // Mobile implementation
+        // Mobile implementation - check if file exists in device storage
         try {
           // First check if directory exists, create if not
           try {
@@ -35,29 +36,48 @@ export const useLLM = () => {
             // Directory might already exist
           }
           
-          const result = await Filesystem.readdir({
-            path: 'models',
-            directory: Directory.Data
-          });
-          
-          const modelExists = result.files.some(file => file.name === MODEL_FILENAME);
-          
-          if (modelExists) {
-            // Get the full path to the model file
-            const modelFilePath = `${Directory.Data}/models/${MODEL_FILENAME}`;
-            setModelPath(modelFilePath);
-            setIsModelLoaded(true);
-            await initializeModel(modelFilePath);
-          } else {
-            console.log('Model not found on mobile, needs download');
+          // Check if model file exists
+          try {
+            const result = await Filesystem.readdir({
+              path: 'models',
+              directory: Directory.Data
+            });
+            
+            const modelExists = result.files.some(file => file.name === MODEL_FILENAME);
+            
+            if (modelExists) {
+              // Get the full path to the model file
+              const modelFilePath = `${Directory.Data}/models/${MODEL_FILENAME}`;
+              setModelPath(modelFilePath);
+              setIsModelLoaded(true);
+              setStatusMessage('Model loaded from device storage');
+              await initializeModel(modelFilePath);
+              
+              // Store a flag in localStorage to indicate model is downloaded
+              localStorage.setItem('llm_model_downloaded', 'true');
+              localStorage.setItem('llm_model_path', modelFilePath);
+              localStorage.setItem('llm_model_timestamp', Date.now().toString());
+              
+              console.log('Model found in device storage:', modelFilePath);
+              return true;
+            }
+          } catch (err) {
+            console.error('Error checking model file:', err);
           }
         } catch (err) {
           console.error('Error checking model on mobile:', err);
-          // If error is because directory doesn't exist, we'll download the model
         }
       } else {
-        // Web implementation - check IndexedDB first
+        // Web implementation - check IndexedDB with better persistence
         try {
+          // First check localStorage for quick verification
+          const modelDownloaded = localStorage.getItem('llm_model_downloaded') === 'true';
+          
+          if (modelDownloaded) {
+            console.log('Model download flag found in localStorage, checking IndexedDB...');
+          }
+          
+          // Open IndexedDB and check for model
           const db = await openModelDB();
           const tx = db.transaction('models', 'readonly');
           const store = tx.objectStore('models');
@@ -65,15 +85,34 @@ export const useLLM = () => {
           
           if (modelRecord) {
             // Model exists in IndexedDB
-            console.log('Model found in IndexedDB');
+            console.log('Model found in IndexedDB, size:', formatBytes(modelRecord.data.size));
+            setStatusMessage('Model found in browser storage');
             
             // Create a blob URL for the model
             const blob = modelRecord.data;
             const blobUrl = URL.createObjectURL(blob);
             setModelPath(blobUrl);
             setIsModelLoaded(true);
+            
+            // Store a flag in localStorage for quick checks on future loads
+            localStorage.setItem('llm_model_downloaded', 'true');
+            localStorage.setItem('llm_model_timestamp', modelRecord.timestamp.toString());
+            
             await initializeModel(blobUrl);
+            
+            await tx.complete;
+            db.close();
+            return true;
           } else {
+            // If localStorage says model exists but IndexedDB doesn't have it,
+            // clear the localStorage flag
+            if (modelDownloaded) {
+              console.warn('Model flag found in localStorage but model not in IndexedDB, clearing flag');
+              localStorage.removeItem('llm_model_downloaded');
+              localStorage.removeItem('llm_model_path');
+              localStorage.removeItem('llm_model_timestamp');
+            }
+            
             // Check if model exists in public folder as fallback
             const publicModelPath = `${process.env.PUBLIC_URL}/models/${MODEL_FILENAME}`;
             
@@ -82,26 +121,39 @@ export const useLLM = () => {
               if (response.ok) {
                 setModelPath(publicModelPath);
                 setIsModelLoaded(true);
+                setStatusMessage('Model loaded from public folder');
                 await initializeModel(publicModelPath);
-              } else {
-                console.log('Model not found locally, needs download');
+                
+                // Store a flag in localStorage
+                localStorage.setItem('llm_model_downloaded', 'true');
+                localStorage.setItem('llm_model_path', publicModelPath);
+                localStorage.setItem('llm_model_timestamp', Date.now().toString());
+                
+                return true;
               }
             } catch (err) {
-              console.log('Model not found locally, needs download');
+              console.log('Model not found in public folder');
             }
           }
           
           db.close();
         } catch (err) {
           console.error('Error checking model in IndexedDB:', err);
+          setStatusMessage('Error checking browser storage');
         }
       }
+      
+      // If we get here, model was not found
+      setStatusMessage('Model not found, needs download');
+      return false;
     } catch (err) {
       console.error('Error checking model:', err);
       setError('Failed to check if model exists');
+      return false;
     }
   };
   
+  // Enhance the downloadModel function for better persistence
   const downloadModel = async () => {
     setIsLoading(true);
     setModelProgress(0);
@@ -109,91 +161,128 @@ export const useLLM = () => {
     
     try {
       if (isPlatform('capacitor')) {
-        // Create directory if it doesn't exist
+        // Mobile implementation with better persistence
         try {
+          // Create directory if it doesn't exist
           await Filesystem.mkdir({
             path: 'models',
             directory: Directory.Data,
             recursive: true
           });
-        } catch (e) {
-          // Directory might already exist
-        }
-        
-        setStatusMessage('Downloading model...');
-        // Download file
-        const downloadResult = await Filesystem.downloadFile({
-          url: MODEL_URL,
-          path: `models/${MODEL_FILENAME}`,
-          directory: Directory.Data,
-          progress: true,
-          listener: (progress) => {
-            const percentage = Math.floor((progress.bytes / progress.contentLength) * 100);
-            setModelProgress(percentage);
-            setStatusMessage(`Downloading model: ${percentage}% (${formatBytes(progress.bytes)} / ${formatBytes(progress.contentLength)})`);
+          
+          setStatusMessage('Downloading model...');
+          // Download file with proper error handling
+          const downloadResult = await Filesystem.downloadFile({
+            url: MODEL_URL,
+            path: `models/${MODEL_FILENAME}`,
+            directory: Directory.Data,
+            progress: true,
+            listener: (progress) => {
+              const percentage = Math.floor((progress.bytes / progress.contentLength) * 100);
+              setModelProgress(percentage);
+              setStatusMessage(`Downloading model: ${percentage}% (${formatBytes(progress.bytes)} / ${formatBytes(progress.contentLength)})`);
+            }
+          });
+          
+          // Verify the downloaded file exists
+          const result = await Filesystem.readdir({
+            path: 'models',
+            directory: Directory.Data
+          });
+          
+          const modelExists = result.files.some(file => file.name === MODEL_FILENAME);
+          
+          if (modelExists) {
+            setStatusMessage('Initializing model...');
+            // Get the full path to the downloaded file
+            const modelFilePath = `${Directory.Data}/models/${MODEL_FILENAME}`;
+            setModelPath(modelFilePath);
+            setIsModelLoaded(true);
+            
+            // Store a flag in localStorage for persistence
+            localStorage.setItem('llm_model_downloaded', 'true');
+            localStorage.setItem('llm_model_path', modelFilePath);
+            localStorage.setItem('llm_model_timestamp', Date.now().toString());
+            
+            await initializeModel(modelFilePath);
+            
+            setStatusMessage('Model ready to use');
+            console.log('Model downloaded successfully to:', modelFilePath);
+          } else {
+            throw new Error('Download completed but file not found');
           }
-        });
-        
-        setStatusMessage('Initializing model...');
-        // Get the full path to the downloaded file
-        const modelFilePath = `${Directory.Data}/models/${MODEL_FILENAME}`;
-        setModelPath(modelFilePath);
-        setIsModelLoaded(true);
-        await initializeModel(modelFilePath);
-        
-        setStatusMessage('Model ready to use');
-        console.log('Model downloaded successfully to:', modelFilePath);
+        } catch (err) {
+          console.error('Error downloading model on mobile:', err);
+          throw err;
+        }
       } else {
-        // Web implementation - download to IndexedDB
+        // Web implementation - download to IndexedDB with better persistence
         setStatusMessage('Downloading model...');
-        const response = await fetch(MODEL_URL);
-        const reader = response.body.getReader();
-        const contentLength = +response.headers.get('Content-Length');
-        
-        let receivedLength = 0;
-        const chunks = [];
-        
-        while(true) {
-          const {done, value} = await reader.read();
+        try {
+          const response = await fetch(MODEL_URL);
           
-          if (done) {
-            break;
+          if (!response.ok) {
+            throw new Error(`Server responded with ${response.status}: ${response.statusText}`);
           }
           
-          chunks.push(value);
-          receivedLength += value.length;
+          const reader = response.body.getReader();
+          const contentLength = +response.headers.get('Content-Length');
           
-          const percentage = Math.floor((receivedLength / contentLength) * 100);
-          setModelProgress(percentage);
-          setStatusMessage(`Downloading model: ${percentage}% (${formatBytes(receivedLength)} / ${formatBytes(contentLength)})`);
+          let receivedLength = 0;
+          const chunks = [];
+          
+          while(true) {
+            const {done, value} = await reader.read();
+            
+            if (done) {
+              break;
+            }
+            
+            chunks.push(value);
+            receivedLength += value.length;
+            
+            const percentage = Math.floor((receivedLength / contentLength) * 100);
+            setModelProgress(percentage);
+            setStatusMessage(`Downloading model: ${percentage}% (${formatBytes(receivedLength)} / ${formatBytes(contentLength)})`);
+          }
+          
+          setStatusMessage('Saving model to browser storage...');
+          const blob = new Blob(chunks);
+          const timestamp = Date.now();
+          
+          // Store in IndexedDB with better error handling
+          const db = await openModelDB();
+          const tx = db.transaction('models', 'readwrite');
+          const store = tx.objectStore('models');
+          
+          // Add timestamp and size metadata
+          store.put({
+            id: MODEL_FILENAME,
+            data: blob,
+            timestamp: timestamp,
+            size: blob.size
+          });
+          
+          await tx.complete;
+          db.close();
+          
+          // Store a flag in localStorage for quick checks on future loads
+          localStorage.setItem('llm_model_downloaded', 'true');
+          localStorage.setItem('llm_model_timestamp', timestamp.toString());
+          
+          setStatusMessage('Initializing model...');
+          // Create a blob URL for the model
+          const blobUrl = URL.createObjectURL(blob);
+          setModelPath(blobUrl);
+          setIsModelLoaded(true);
+          await initializeModel(blobUrl);
+          
+          setStatusMessage('Model ready to use');
+          console.log('Model downloaded successfully to IndexedDB and loaded from:', blobUrl);
+        } catch (err) {
+          console.error('Error downloading model for web:', err);
+          throw err;
         }
-        
-        setStatusMessage('Saving model to local storage...');
-        const blob = new Blob(chunks);
-        
-        // Store in IndexedDB
-        const db = await openModelDB();
-        const tx = db.transaction('models', 'readwrite');
-        const store = tx.objectStore('models');
-        store.put({
-          id: MODEL_FILENAME,
-          data: blob,
-          timestamp: Date.now(),
-          size: blob.size
-        });
-        
-        await tx.complete;
-        db.close();
-        
-        setStatusMessage('Initializing model...');
-        // Create a blob URL for the model
-        const blobUrl = URL.createObjectURL(blob);
-        setModelPath(blobUrl);
-        setIsModelLoaded(true);
-        await initializeModel(blobUrl);
-        
-        setStatusMessage('Model ready to use');
-        console.log('Model downloaded successfully to IndexedDB and loaded from:', blobUrl);
       }
     } catch (err) {
       console.error('Error downloading model:', err);
@@ -224,7 +313,9 @@ export const useLLM = () => {
       request.onupgradeneeded = (event) => {
         const db = event.target.result;
         if (!db.objectStoreNames.contains('models')) {
-          db.createObjectStore('models', { keyPath: 'id' });
+          const store = db.createObjectStore('models', { keyPath: 'id' });
+          store.createIndex('timestamp', 'timestamp', { unique: false });
+          store.createIndex('size', 'size', { unique: false });
         }
       };
       
@@ -233,6 +324,7 @@ export const useLLM = () => {
       };
       
       request.onerror = (event) => {
+        console.error('IndexedDB error:', event.target.error);
         reject(event.target.error);
       };
     });
@@ -271,15 +363,22 @@ export const useLLM = () => {
       return new Promise((resolve) => {
         setTimeout(() => {
           // Simulate different responses based on input
+          let response = '';
           if (prompt.toLowerCase().includes('light') || prompt.toLowerCase().includes('बत्ती')) {
-            resolve(`I'll help you control that device. Processing your request now.`);
+            response = `I'll help you control that device. Processing your request now.`;
           } else if (prompt.toLowerCase().includes('weather') || prompt.toLowerCase().includes('मौसम')) {
-            resolve(`The weather is currently sunny with a temperature of 25°C.`);
+            response = `The weather is currently sunny with a temperature of 25°C.`;
           } else if (prompt.toLowerCase().includes('time') || prompt.toLowerCase().includes('समय')) {
-            resolve(`The current time is ${new Date().toLocaleTimeString()}.`);
+            response = `The current time is ${new Date().toLocaleTimeString()}.`;
           } else {
-            resolve(`I received your request: "${prompt}". How can I assist you further?`);
+            response = `I received your request: "${prompt}". How can I assist you further?`;
           }
+          
+          // Ensure the response is properly formatted for TTS
+          response = response.trim();
+          console.log('Generated response for TTS:', response);
+          
+          resolve(response);
         }, 1000);
       });
       

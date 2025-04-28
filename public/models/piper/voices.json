@@ -1,0 +1,20 @@
+{
+  "voices": [
+    {
+      "name": "indic_female",
+      "language": "hi-IN",
+      "gender": "female",
+      "description": "Indian Female Voice",
+      "modelFile": "hi_IN_indic_low.onnx",
+      "configFile": "hi_IN_indic_low.onnx.json"
+    },
+    {
+      "name": "english_indian_female",
+      "language": "en-IN",
+      "gender": "female",
+      "description": "English (Indian) Female Voice",
+      "modelFile": "en_IN_female_low.onnx",
+      "configFile": "en_IN_female_low.onnx.json"
+    }
+  ]
+}
