@@ -1,0 +1,32 @@
+[
+    {
+      "id": 1,
+      "name": "Living Room",
+      "type": "Living Room",
+      "devices": [
+        { "id": 101, "name": "Ceiling Fan", "status": "on" },
+        { "id": 102, "name": "Smart Bulb", "status": "off" },
+        { "id": 103, "name": "AC", "status": "off" }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Bedroom",
+      "type": "Bedroom",
+      "devices": [
+        { "id": 201, "name": "Night Lamp", "status": "on" },
+        { "id": 202, "name": "Smart Plug", "status": "off" },
+        { "id": 203, "name": "Air Purifier", "status": "on" }
+      ]
+    },
+    {
+      "id": 3,
+      "name": "Kitchen",
+      "type": "Kitchen",
+      "devices": [
+        { "id": 301, "name": "Coffee Maker", "status": "off" },
+        { "id": 302, "name": "Exhaust Fan", "status": "on" }
+      ]
+    }
+  ]
+  

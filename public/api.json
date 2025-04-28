@@ -1,0 +1,24 @@
+[
+    {
+      "title": "Smart TV",
+      "devices": 1,
+      "active": true,
+      "connected": true,
+      "icon": "Tv"
+    },
+    {
+      "title": "Living Room Light",
+      "devices": 2,
+      "active": false,
+      "connected": false,
+      "icon": "Lightbulb"
+    },
+    {
+      "title": "Ceiling Fan",
+      "devices": 1,
+      "active": true,
+      "connected": true,
+      "icon": "Fan"
+    }
+  ]
+  

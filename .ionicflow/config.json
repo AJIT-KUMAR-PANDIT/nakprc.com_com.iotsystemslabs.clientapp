@@ -1,0 +1,10 @@
+{
+  "appId": "com.iotsystems.clientapp",
+  "appName": "IOT Systems Labs",
+  "webDir": "dist",
+  "android": {
+    "packageName": "com.iotsystems.clientapp",
+    "versionCode": 1,
+    "versionName": "1.0.0"
+  }
+}

@@ -1,0 +1,23 @@
+[
+    {
+        "id": 1,
+        "deviceName": "Ceiling Fan",
+        "room": "Living Room",
+        "usageHours": 4,
+        "powerConsumption": 1.5
+    },
+    {
+        "id": 2,
+        "deviceName": "Smart Bulb",
+        "room": "Bedroom",
+        "usageHours": 6,
+        "powerConsumption": 0.3
+    },
+    {
+        "id": 3,
+        "deviceName": "Coffee Maker",
+        "room": "Kitchen",
+        "usageHours": 1,
+        "powerConsumption": 0.5
+    }
+]
