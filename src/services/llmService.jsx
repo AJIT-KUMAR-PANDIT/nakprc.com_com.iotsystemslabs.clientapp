@@ -245,10 +245,7 @@ export const useLLM = () => {
       // Store model in appropriate storage
       if (
         platform === "web" &&
-        typeof navigator !== "undefined" &&
-        navigator.storage &&
-        navigator.storage.buckets &&
-        typeof navigator.storage.buckets.open === "function"
+        isStorageBucketsSupported()
       ) {
         await saveModelToStorageBucket(MODEL_CONFIG.filename, buffer);
       } else if (platform !== "web" && Filesystem) {
