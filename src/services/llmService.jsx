@@ -4,6 +4,10 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { LLM } from "../llm.js/llm.js";
 
+const modelUrl =
+  "https://huggingface.co/afrideva/TinyMistral-248M-GGUF/resolve/main/tinymistral-248m.q2_k.gguf";
+const modelFileName = "tinymistral-248m.q2_k.gguf";
+
 // Capacitor plugin references
 let Filesystem, Directory, Device, Toast;
 // Detect if Capacitor is available
@@ -32,10 +36,6 @@ export const useLLM = () => {
   const [isDownloading, setIsDownloading] = useState(false); // Add flag for download status
 
   const llmInstance = useRef(null);
-
-  const modelUrl =
-    "https://huggingface.co/afrideva/TinyMistral-248M-GGUF/resolve/main/tinymistral-248m.q2_k.gguf";
-  const modelFileName = "tinymistral-248m.q2_k.gguf";
 
   // Dynamic Capacitor plugin import
   useEffect(() => {
@@ -80,8 +80,8 @@ export const useLLM = () => {
     if (llmInstance.current) {
       try {
         llmInstance.current.dispose();
-      } catch (e) {
-        console.warn("Disposing LLM failed:", e);
+      } catch {
+        console.warn("Disposing LLM failed");
       }
     }
 
@@ -206,7 +206,12 @@ export const useLLM = () => {
     setError(null);
 
     try {
-      const fileExists = await modelFileExists();
+      let fileExists = false;
+      if (platform === "web") {
+        fileExists = await checkFileExistsInBrowserStorage(modelFileName);
+      } else {
+        fileExists = await modelFileExists();
+      }
 
       if (fileExists) {
         setStatusMessage("Model found. Loading...");
@@ -218,17 +223,27 @@ export const useLLM = () => {
           setStatusMessage("Model ready");
           await showToast("Model loaded successfully");
         } else {
-          console.log("Invalid model found, redownloading...");
+          setStatusMessage("Model invalid. Redownloading...");
           if (platform === "web") {
             await deleteModelFromBrowserStorage(modelFileName);
           } else {
             await deleteModelFromCapacitor();
           }
           await downloadModel();
+          const newModelData = await loadModelFromStorage();
+          await initializeModel(newModelData);
+          setIsModelLoaded(true);
+          setStatusMessage("Model ready");
+          await showToast("Model loaded successfully");
         }
       } else {
         setStatusMessage("Model not found. Downloading...");
         await downloadModel();
+        const newModelData = await loadModelFromStorage();
+        await initializeModel(newModelData);
+        setIsModelLoaded(true);
+        setStatusMessage("Model ready");
+        await showToast("Model loaded successfully");
       }
     } catch (err) {
       console.error("Model check error:", err);
@@ -244,33 +259,39 @@ export const useLLM = () => {
     downloadModel,
     loadModelFromStorage,
     modelFileExists,
-    showToast,
-  ]); // Updated dependencies
+  ]);
 
-  // Init on platform detected
   useEffect(() => {
-    if (platform === "web" && "serviceWorker" in navigator) {
-      navigator.serviceWorker
-        .register("/opfs-sw.js")
-        .then((reg) => console.log("SW registered:", reg.scope))
-        .catch((err) => {
-          console.error("SW registration failed:", err);
-          setError("Service Worker registration failed.");
-        });
-    }
-
-    checkModelExists(); // Now this is called after the function is defined
-
-    return () => {
-      if (llmInstance.current) {
-        try {
-          llmInstance.current.dispose();
-        } catch (e) {
-          console.warn("Error disposing LLM instance:", e);
-        }
-      }
-    };
+    // Call checkModelExists when the component mounts or when platform changes
+    checkModelExists();
   }, [platform, checkModelExists]);
+
+  const loadModelFromBrowserStorage = async (filename) => {
+    try {
+      // Implement logic to load the file from browser storage
+      console.log(`Attempting to load ${filename} from browser storage`);
+      const data = localStorage.getItem(filename);
+      if (!data)
+        throw new Error(`File ${filename} not found in browser storage`);
+      const buffer = new Uint8Array(JSON.parse(data));
+      console.log(`File ${filename} loaded successfully from browser storage`);
+      return buffer.buffer;
+    } catch (err) {
+      console.error("Failed to load model from browser storage:", err);
+      throw new Error(`Failed to load model: ${err.message}`);
+    }
+  };
+
+  const checkFileExistsInBrowserStorage = async (filename) => {
+    try {
+      // Implement logic to check if the file exists in browser storage
+      const data = localStorage.getItem(filename);
+      return data !== null;
+    } catch (err) {
+      console.error("Failed to check file existence in browser storage:", err);
+      return false;
+    }
+  };
 
   const generateResponse = useCallback(
     async (userInput) => {
@@ -322,7 +343,7 @@ export const useLLM = () => {
             llmInstance.current.run({ prompt, ...llmParams });
           } catch (err) {
             console.error("LLM run failed:", err);
-            reject(err); // Use reject to handle errors
+            reject(err);
           }
         });
 
@@ -339,7 +360,7 @@ export const useLLM = () => {
       }
     },
     [isModelLoaded, llmInstance, response]
-  ); // Updated dependencies
+  );
 
   const redownloadModel = async () => {
     try {
@@ -348,7 +369,11 @@ export const useLLM = () => {
       setStatusMessage("Redownloading model...");
 
       if (llmInstance.current) {
-        llmInstance.current.dispose();
+        try {
+          llmInstance.current.dispose();
+        } catch {
+          console.warn("Disposing LLM failed");
+        }
         llmInstance.current = null;
       }
 
@@ -375,60 +400,6 @@ export const useLLM = () => {
     }
   };
 
-  const deleteModelFromBrowserStorage = async (filename) => {
-    try {
-      // Implement logic to delete the file from browser storage
-      console.log(`Attempting to delete ${filename} from browser storage`);
-      localStorage.removeItem(filename);
-      console.log(`File ${filename} deleted successfully from browser storage`);
-    } catch (e) {
-      console.error("Error deleting model from browser storage:", e);
-    }
-  };
-
-  const deleteModelFromCapacitor = async () => {
-    console.warn("deleteModelFromCapacitor is not yet implemented.");
-  };
-
-  const saveModelToBrowserStorage = async (filename, buffer) => {
-    try {
-      // Implement logic to save the buffer to browser storage
-      console.log(`Attempting to save ${filename} to browser storage`);
-      localStorage.setItem(filename, JSON.stringify(Array.from(buffer)));
-      console.log(`File ${filename} saved successfully to browser storage`);
-    } catch (err) {
-      console.error("Failed to save model to browser storage:", err);
-      throw new Error(`Failed to save model: ${err.message}`);
-    }
-  };
-
-  const loadModelFromBrowserStorage = async (filename) => {
-    try {
-      // Implement logic to load the file from browser storage
-      console.log(`Attempting to load ${filename} from browser storage`);
-      const data = localStorage.getItem(filename);
-      if (!data)
-        throw new Error(`File ${filename} not found in browser storage`);
-      const buffer = new Uint8Array(JSON.parse(data));
-      console.log(`File ${filename} loaded successfully from browser storage`);
-      return buffer.buffer;
-    } catch (err) {
-      console.error("Failed to load model from browser storage:", err);
-      throw new Error(`Failed to load model: ${err.message}`);
-    }
-  };
-
-  const checkFileExistsInBrowserStorage = async (filename) => {
-    try {
-      // Implement logic to check if the file exists in browser storage
-      const data = localStorage.getItem(filename);
-      return data !== null;
-    } catch (err) {
-      console.error("Failed to check file existence in browser storage:", err);
-      return false;
-    }
-  };
-
   return {
     isModelLoaded,
     statusMessage,
@@ -438,8 +409,8 @@ export const useLLM = () => {
     error,
     deviceInfo,
     platform,
-    generateResponse,
-    redownloadModel,
+    generateResponse, // Ensure this is returned
+    redownloadModel, // Ensure this is returned
   };
 };
 
@@ -490,7 +461,7 @@ const saveModelToStorageBucket = async (filename, buffer) => {
   if ("storageBuckets" in navigator) {
     try {
       const bucket = await navigator.storageBuckets.open("myBucket", {
-        quota: 1024 * 1024 * 1284, // 284 MB quota
+        quota: 1024 * 1024 * 284, // 284 MB quota
         persistent: true, // Persistent storage
       });
 
@@ -532,5 +503,44 @@ const loadModelFromStorageBucket = async (filename) => {
   } else {
     console.warn("Storage Buckets API not supported");
     throw new Error("Storage Buckets API not supported");
+  }
+};
+
+const saveModelToBrowserStorage = async (filename, buffer) => {
+  try {
+    // Convert ArrayBuffer to JSON string for storage
+    const jsonData = JSON.stringify(Array.from(new Uint8Array(buffer)));
+    localStorage.setItem(filename, jsonData);
+    console.log(`File ${filename} saved successfully to browser storage`);
+  } catch (err) {
+    console.error("Failed to save model to browser storage:", err);
+    throw new Error(`Failed to save model: ${err.message}`);
+  }
+};
+
+const deleteModelFromBrowserStorage = async (filename) => {
+  try {
+    // Remove the file from local storage
+    localStorage.removeItem(filename);
+    console.log(`File ${filename} deleted successfully from browser storage`);
+  } catch (err) {
+    console.error("Failed to delete model from browser storage:", err);
+    throw new Error(`Failed to delete model: ${err.message}`);
+  }
+};
+
+const deleteModelFromCapacitor = async () => {
+  try {
+    if (!Filesystem) throw new Error("Filesystem not available");
+
+    await Filesystem.deleteFile({
+      path: modelFileName, // Ensure modelFileName is accessible here
+      directory: Directory.Data,
+    });
+
+    console.log(`File ${modelFileName} deleted successfully from Capacitor`);
+  } catch (err) {
+    console.error("Failed to delete model from Capacitor:", err);
+    throw new Error(`Failed to delete model: ${err.message}`);
   }
 };
