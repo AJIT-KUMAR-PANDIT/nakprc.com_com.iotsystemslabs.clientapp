@@ -1,4 +1,3 @@
-// AIOverlay.jsx
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import "../styles/ai-overlay.css";
 import { useLLM } from "../services/llmService";
@@ -162,17 +161,21 @@ const AIOverlay = ({ isOpen, onClose, onListen, isListening }) => {
   if (!isOpen) return null;
 
   return (
-    <div className="ai-overlay enhanced-glass">
-      <div className="ai-overlay-background enhanced-glass"></div>
-      <div className={`ai-overlay-content animated-entrance`}>
-        <button className="ai-close-button enhanced-close" onClick={onClose}>
+    <div className="ai-overlay">
+      <div className="ai-overlay-background"></div>
+      <div
+        className={`ai-overlay-content ${
+          animationComplete ? "animated-entrance" : ""
+        }`}
+      >
+        <button className="ai-close-button" onClick={onClose}>
           <span>×</span>
         </button>
-        <div className="ai-circle-container enhanced-shadow">
-          <div className="ai-outer-circle enhanced-glow"></div>
-          <div className="ai-middle-circle enhanced-glow"></div>
-          <div className="ai-inner-circle enhanced-glow"></div>
-          <div className="ai-core enhanced-core-glow">
+        <div className="ai-circle-container">
+          <div className="ai-outer-circle"></div>
+          <div className="ai-middle-circle"></div>
+          <div className="ai-inner-circle"></div>
+          <div className="ai-core">
             <div
               className={`ai-core-pulse ${
                 isListening || isSpeaking ? "pulse-active" : ""
@@ -180,7 +183,7 @@ const AIOverlay = ({ isOpen, onClose, onListen, isListening }) => {
             ></div>
           </div>
           {animationComplete && (
-            <div className="ai-status-text enhanced-status-text">
+            <div className="ai-status-text">
               {isProcessing
                 ? "Processing..."
                 : isSpeaking
@@ -195,7 +198,7 @@ const AIOverlay = ({ isOpen, onClose, onListen, isListening }) => {
           {audioVisualizer.map((height, index) => (
             <div
               key={index}
-              className="ai-visualizer-bar enhanced-bar"
+              className="ai-visualizer-bar"
               style={{ height: `${height}%` }}
             ></div>
           ))}
@@ -211,9 +214,7 @@ const AIOverlay = ({ isOpen, onClose, onListen, isListening }) => {
           </div>
         )}
         <button
-          className={`ai-action-button enhanced-action ${
-            isListening ? "listening" : ""
-          }`}
+          className={`ai-action-button ${isListening ? "listening" : ""}`}
           onClick={onListen}
           disabled={!isModelLoaded || isLoading || isCheckingModel}
         >
@@ -266,7 +267,7 @@ const AIOverlay = ({ isOpen, onClose, onListen, isListening }) => {
           <button
             onClick={redownloadModel}
             disabled={isLoading}
-            className="ai-reset-button enhanced-reset"
+            className="ai-reset-button"
           >
             Reset AI Model
           </button>

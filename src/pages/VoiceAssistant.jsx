@@ -1,16 +1,24 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { Mic, Loader, X } from "lucide-react";
 import AIOverlay from "../components/AIOverlay";
+import { useSpeechRecognition } from "../services/speechRecognitionService";
 
 const VoiceAssistant = ({ isBlackBg, label }) => {
   const [isListening, setIsListening] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [overlayOpen, setOverlayOpen] = useState(false);
+  const { transcript, startListening, stopListening } = useSpeechRecognition();
+
+  useEffect(() => {
+    if (transcript && transcript.toLowerCase().includes("luna")) {
+      openOverlay();
+      stopListening();
+    }
+  }, [transcript, stopListening]);
 
   const handleStartListening = () => {
     setIsLoading(true);
-
-    // Simulate AI processing delay
+    startListening();
     setTimeout(() => {
       setIsListening(true);
       setIsLoading(false);
@@ -19,21 +27,22 @@ const VoiceAssistant = ({ isBlackBg, label }) => {
 
   const handleStopListening = () => {
     setIsListening(false);
+    stopListening();
   };
 
-  const startListening = async () => {
+  const startListeningWrapper = async () => {
     handleStartListening();
   };
 
-  const stopListening = async () => {
+  const stopListeningWrapper = async () => {
     handleStopListening();
   };
 
   const handleListen = async () => {
     if (isListening) {
-      await stopListening();
+      await stopListeningWrapper();
     } else {
-      await startListening();
+      await startListeningWrapper();
     }
   };
 
@@ -44,7 +53,7 @@ const VoiceAssistant = ({ isBlackBg, label }) => {
   const closeOverlay = () => {
     setOverlayOpen(false);
     if (isListening) {
-      stopListening();
+      stopListeningWrapper();
     }
   };
 
@@ -78,7 +87,6 @@ const VoiceAssistant = ({ isBlackBg, label }) => {
         )}
       </div>
 
-      {/* Dynamic Label */}
       <span
         className={`mt-2 text-sm font-bold ${
           isBlackBg ? "text-white" : "text-black"
@@ -87,7 +95,6 @@ const VoiceAssistant = ({ isBlackBg, label }) => {
         {label || "AI Voice"}
       </span>
 
-      {/* Add the AI Overlay */}
       <AIOverlay
         isOpen={overlayOpen}
         onClose={closeOverlay}

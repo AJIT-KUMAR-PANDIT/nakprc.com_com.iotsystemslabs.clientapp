@@ -670,7 +670,9 @@ const saveModelToIndexedDB = async (filename, buffer) => {
 
     request.onupgradeneeded = (event) => {
       const db = event.target.result;
-      db.createObjectStore("models", { keyPath: "filename" });
+      if (!db.objectStoreNames.contains("models")) {
+        db.createObjectStore("models", { keyPath: "filename" });
+      }
     };
   });
 };
@@ -773,6 +775,13 @@ const checkModelInIndexedDB = async (filename) => {
           new Error("Failed to check model: " + event.target.error.message)
         );
       };
+    };
+
+    request.onupgradeneeded = (event) => {
+      const db = event.target.result;
+      if (!db.objectStoreNames.contains("models")) {
+        db.createObjectStore("models", { keyPath: "filename" });
+      }
     };
   });
 };
