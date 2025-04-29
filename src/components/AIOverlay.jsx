@@ -11,7 +11,7 @@ const AIOverlay = ({ isOpen, onClose, onListen, isListening }) => {
   const [response, setResponse] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
 
-  const { speak, isSpeaking } = useTTS();
+  const { speak, isSpeaking, onEnd: onTTSEnd } = useTTS(); // <-- Add onEnd if your TTS hook supports it
   const {
     generateResponse,
     isModelLoaded,
@@ -36,23 +36,43 @@ const AIOverlay = ({ isOpen, onClose, onListen, isListening }) => {
   }, [isListening]);
 
   // Handle wake word detection
+  // Debounce timer ref
+  const debounceTimer = useRef(null);
+
   useEffect(() => {
+    if (recognizedText) {
+      console.log("Speech recognition text:", recognizedText);
+    }
+
     if (recognizedText && recognizedText.toLowerCase().includes("luna")) {
       if (!isOpen) {
-        // If overlay is not open and wake word detected, open it
-        onListen(); // This will start listening
+        onListen();
       }
     }
 
-    // Process command if we're listening and have text
+    // Debounce: Only process after user stops speaking for 1 second
     if (
       isListening &&
       recognizedText &&
       !recognizedText.toLowerCase().includes("luna")
     ) {
-      setTranscript(recognizedText);
-      processCommand(recognizedText);
+      if (debounceTimer.current) {
+        clearTimeout(debounceTimer.current);
+      }
+      debounceTimer.current = setTimeout(() => {
+        const fullText = recognizedText.trim();
+        console.log("Processing full command:", fullText);
+        setTranscript(fullText);
+        processCommand(fullText);
+      }, 1000); // 1 second pause
     }
+
+    // Cleanup timer on unmount or recognizedText change
+    return () => {
+      if (debounceTimer.current) {
+        clearTimeout(debounceTimer.current);
+      }
+    };
   }, [recognizedText, isOpen, isListening]);
 
   // Process the user command
@@ -61,50 +81,75 @@ const AIOverlay = ({ isOpen, onClose, onListen, isListening }) => {
     setIsProcessing(true);
     setTranscript(text);
 
-    // First check for smart home command
-    const smartHomeRegex =
-      /(turn|switch|put|set) (on|off) (the )?([\w\s]+) (in|at) (the )?([\w\s]+)/i;
-    const match = text.match(smartHomeRegex);
+    // Wait for 3 seconds before sending to LLM (pause after user finishes speaking)
+    await new Promise((resolve) => setTimeout(resolve, 3000));
 
-    if (match) {
-      const action = match[2]; // on/off
-      const device = match[4].trim(); // device name
-      const room = match[7].trim(); // room name
+    try {
+      // Always send the full sentence to LLM
+      const llmResponse = await generateResponse(text);
 
-      try {
-        // Make API call to control device
-        const apiUrl = `http://nakprciotsystemslabs.local/${encodeURIComponent(
-          room
-        )}/${encodeURIComponent(device)}/${action}`;
-        const result = await fetch(apiUrl);
-
-        if (result.ok) {
-          const responseText = `${device} in ${room} turned ${action}`;
-          setResponse(responseText);
-          speak(responseText);
-        } else {
-          throw new Error("Failed to control device");
+      // Extract system and user lines
+      let systemUrl = null;
+      let userResponse = null;
+      if (llmResponse) {
+        // Match lines like: system: http://nakprciotsystemslabs.local/...
+        const systemMatch = llmResponse.match(/^system:\s*(.+)$/m);
+        if (systemMatch) {
+          systemUrl = systemMatch[1].trim();
         }
-      } catch (error) {
-        console.error("Smart home control error:", error);
-        const errorResponse = `Sorry, I couldn't control the ${device} in ${room}`;
-        setResponse(errorResponse);
-        speak(errorResponse);
+        // Match lines like: user: ...
+        const userMatch = llmResponse.match(/^user:\s*(.+)$/m);
+        if (userMatch) {
+          userResponse = userMatch[1].trim();
+        }
       }
-    } else {
-      // If not a smart home command, use LLM
-      try {
-        const llmResponse = await generateResponse(text);
+
+      // If system URL is present, call the device control API
+      if (systemUrl) {
+        try {
+          const result = await fetch(systemUrl);
+          // Optionally, you can check result.ok and handle errors
+        } catch (err) {
+          console.error("Device control API error:", err);
+        }
+      }
+
+      // If user response is present, speak it
+      if (userResponse) {
+        setResponse(userResponse);
+        await speak(userResponse);
+      } else {
+        // fallback: speak the whole LLM response
         setResponse(llmResponse);
         await speak(llmResponse);
-      } catch (error) {
-        console.error("LLM error:", error);
-        const errorResponse = "Sorry, I had trouble processing your request";
-        setResponse(errorResponse);
-        await speak(errorResponse);
       }
+    } catch (error) {
+      console.error("LLM error:", error);
+      const errorResponse = "Sorry, I had trouble processing your request";
+      setResponse(errorResponse);
+      await speak(errorResponse);
     }
+
     setIsProcessing(false);
+  };
+
+  // Helper to speak and wait for TTS to finish
+  const speakAndWait = (text) => {
+    return new Promise((resolve) => {
+      speak(text);
+      // If your TTS hook provides an onEnd callback, use it:
+      if (typeof onTTSEnd === 'function') {
+        onTTSEnd(resolve);
+      } else {
+        // Fallback: poll isSpeaking
+        const interval = setInterval(() => {
+          if (!isSpeaking) {
+            clearInterval(interval);
+            resolve();
+          }
+        }, 100);
+      }
+    });
   };
 
   useEffect(() => {

@@ -5,7 +5,7 @@ import { LLM } from "../llm.js/llm.js";
 
 // --- OPFS helpers ---
 async function saveModelToOPFS(filename, blob) {
-  if (!('storage' in navigator && 'getDirectory' in navigator.storage)) {
+  if (!("storage" in navigator && "getDirectory" in navigator.storage)) {
     console.error("OPFS not supported in this browser.");
     throw new Error("OPFS not supported in this browser.");
   }
@@ -19,7 +19,7 @@ async function saveModelToOPFS(filename, blob) {
 }
 
 async function loadModelFromOPFS(filename) {
-  if (!('storage' in navigator && 'getDirectory' in navigator.storage)) {
+  if (!("storage" in navigator && "getDirectory" in navigator.storage)) {
     console.error("OPFS not supported in this browser.");
     throw new Error("OPFS not supported in this browser.");
   }
@@ -126,7 +126,9 @@ export const useLLM = () => {
             const opfsHttpPath = `/models/${MODEL_FILENAME}`;
             setModelPath(opfsHttpPath);
             setIsModelLoaded(true);
-            setStatusMessage("Model loaded from browser storage bucket (OPFS) via Service Worker");
+            setStatusMessage(
+              "Model loaded from browser storage bucket (OPFS) via Service Worker"
+            );
             initializeModel(opfsHttpPath);
             return true;
           }
@@ -161,7 +163,9 @@ export const useLLM = () => {
               const publicModelPath = `/models/${MODEL_FILENAME}`;
               setModelPath(publicModelPath);
               setIsModelLoaded(true);
-              setStatusMessage("Model loaded from Service Worker/OPFS or network");
+              setStatusMessage(
+                "Model loaded from Service Worker/OPFS or network"
+              );
               initializeModel(publicModelPath);
               return true;
             }
@@ -246,7 +250,9 @@ export const useLLM = () => {
           const opfsHttpPath = `/models/${MODEL_FILENAME}`;
           setModelPath(opfsHttpPath);
           setIsModelLoaded(true);
-          setStatusMessage("Model downloaded and saved to browser storage bucket (OPFS) via Service Worker");
+          setStatusMessage(
+            "Model downloaded and saved to browser storage bucket (OPFS) via Service Worker"
+          );
           initializeModel(opfsHttpPath);
           return;
         } catch (e) {
@@ -300,10 +306,37 @@ export const useLLM = () => {
     llmInstance.current.load_worker();
   };
 
-  const generateResponse = async (prompt) => {
+  const generateResponse = async (userInput) => {
+    // Make sure userInput is a complete string, not just the first word
+    if (!userInput || typeof userInput !== 'string') {
+      console.error("Invalid user input:", userInput);
+      return "I couldn't understand that. Please try again.";
+    }
+    
+    // Ensure we're using the full user input, not just the first word
+    const fullUserInput = userInput.trim();
+    
+    // Load prompt template and parameters from prompt.json
+    let promptTemplate = "{{USER_INPUT}}";
+    let llmParams = {};
+    try {
+      const res = await fetch("./prompt.json");
+      if (res.ok) {
+        const data = await res.json();
+        if (data.template) promptTemplate = data.template;
+        if (data.parameters) llmParams = data.parameters;
+      }
+    } catch (e) {
+      // fallback to default template and params
+    }
+    // Replace {{USER_INPUT}} with the actual user input
+    const prompt = promptTemplate.replace('{{USER_INPUT}}', fullUserInput);
+
+    // Log the full prompt for debugging
+    console.log("model: calling main with prompt:", fullUserInput);
+
     return new Promise((resolve) => {
       let fullResponse = "";
-
       llmInstance.current.callback = (text) => {
         fullResponse += text;
         setResponse(fullResponse);
@@ -311,7 +344,8 @@ export const useLLM = () => {
 
       llmInstance.current.run({
         prompt: prompt,
-        top_k: 1,
+        // Spread any additional parameters from prompt.json
+        ...llmParams,
       });
 
       llmInstance.current.onComplete = () => resolve(fullResponse);
