@@ -15,10 +15,11 @@ const AIOverlay = ({ isOpen, onClose, onListen, isListening }) => {
   const {
     generateResponse,
     isModelLoaded,
-    isLoading, // Make sure this is destructured
+    isLoading,
     downloadModel,
     downloadProgress,
     statusMessage,
+    isCheckingModel, // Add this destructuring
   } = useLLM();
   const {
     startListening: startSpeechRecognition,
@@ -57,10 +58,10 @@ const AIOverlay = ({ isOpen, onClose, onListen, isListening }) => {
   // Process the user command
   const processCommand = async (text) => {
     if (isProcessing) return;
-
     setIsProcessing(true);
+    setTranscript(text);
 
-    // Check if it's a smart home command
+    // First check for smart home command
     const smartHomeRegex =
       /(turn|switch|put|set) (on|off) (the )?([\w\s]+) (in|at) (the )?([\w\s]+)/i;
     const match = text.match(smartHomeRegex);
@@ -91,19 +92,18 @@ const AIOverlay = ({ isOpen, onClose, onListen, isListening }) => {
         speak(errorResponse);
       }
     } else {
-      // Not a smart home command, use LLM
+      // If not a smart home command, use LLM
       try {
         const llmResponse = await generateResponse(text);
         setResponse(llmResponse);
-        speak(llmResponse);
+        await speak(llmResponse);
       } catch (error) {
         console.error("LLM error:", error);
         const errorResponse = "Sorry, I had trouble processing your request";
         setResponse(errorResponse);
-        speak(errorResponse);
+        await speak(errorResponse);
       }
     }
-
     setIsProcessing(false);
   };
 
@@ -213,17 +213,19 @@ const AIOverlay = ({ isOpen, onClose, onListen, isListening }) => {
           </div>
         )}
 
+        {/* Update the button disable logic */}
         <button
           className={`ai-action-button enhanced-action ${
             isListening ? "listening" : ""
           }`}
           onClick={onListen}
-          disabled={!isModelLoaded && !isLoading}
+          disabled={!isModelLoaded} // Only enable when model is loaded
         >
           {isListening ? "Stop" : "Listen"}
         </button>
 
-        {!isModelLoaded && (
+        {/* Model download/progress UI */}
+        {!isModelLoaded && !isCheckingModel && (
           <div className="ai-model-status">
             {isLoading ? (
               <>
@@ -232,30 +234,32 @@ const AIOverlay = ({ isOpen, onClose, onListen, isListening }) => {
                   <div className="progress-bar">
                     <div
                       className="progress-fill"
-                      style={{ width: `${downloadProgress}%` }} // Use downloadProgress
+                      style={{ width: `${downloadProgress}%` }}
                     ></div>
                   </div>
-                  <div className="progress-text">{downloadProgress}%</div> // Use downloadProgress
+                  <div className="progress-text">
+                    {Math.round(downloadProgress)}%
+                  </div>
                 </div>
-                <p className="download-info">
-                  Please wait while the AI model downloads...
-                </p>
+                <p className="download-info">Downloading AI model (150MB)...</p>
               </>
             ) : (
               <>
-                <p>AI model needs to be downloaded</p>
+                <p>AI model required for voice assistant</p>
                 <button
                   className="model-download-button"
                   onClick={downloadModel}
                   disabled={isLoading}
                 >
-                  Download Model
+                  Download Now
                 </button>
-                <p className="download-info">
-                  This will download approximately 250MB of data
-                </p>
               </>
             )}
+          </div>
+        )}
+        {isCheckingModel && !isModelLoaded && (
+          <div className="ai-model-status">
+            <p>Checking for existing model...</p>
           </div>
         )}
 

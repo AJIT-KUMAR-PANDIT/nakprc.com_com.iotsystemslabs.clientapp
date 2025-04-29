@@ -1,19 +1,90 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { isPlatform } from "@ionic/react";
 import { Filesystem, Directory } from "@capacitor/filesystem";
-import { LLM } from "../llm.js/llm.js"; // Import LLM class from llm.js
+import { LLM } from "../llm.js/llm.js";
 
+// --- OPFS helpers ---
+async function saveModelToOPFS(filename, blob) {
+  if (!('storage' in navigator && 'getDirectory' in navigator.storage)) {
+    console.error("OPFS not supported in this browser.");
+    throw new Error("OPFS not supported in this browser.");
+  }
+  console.log("Saving model to OPFS:", filename, "size:", blob.size);
+  const root = await navigator.storage.getDirectory();
+  const fileHandle = await root.getFileHandle(filename, { create: true });
+  const writable = await fileHandle.createWritable();
+  await writable.write(blob);
+  await writable.close();
+  console.log("Model saved to OPFS:", filename);
+}
+
+async function loadModelFromOPFS(filename) {
+  if (!('storage' in navigator && 'getDirectory' in navigator.storage)) {
+    console.error("OPFS not supported in this browser.");
+    throw new Error("OPFS not supported in this browser.");
+  }
+  const root = await navigator.storage.getDirectory();
+  try {
+    const fileHandle = await root.getFileHandle(filename);
+    const file = await fileHandle.getFile();
+    console.log("Loaded model from OPFS:", filename, "size:", file.size);
+    return file;
+  } catch (e) {
+    console.warn("Model not found in OPFS:", filename);
+    return null;
+  }
+}
+
+// --- IndexedDB fallback ---
+async function openModelDB() {
+  return new Promise((resolve, reject) => {
+    const request = window.indexedDB.open("llm_model_db", 1);
+
+    request.onupgradeneeded = (event) => {
+      const db = event.target.result;
+      db.createObjectStore("models", { keyPath: "filename" });
+    };
+
+    request.onsuccess = (event) => resolve(event.target.result);
+    request.onerror = (event) => reject(event.target.error);
+  });
+}
+
+async function saveModelToIndexedDB(filename, blob) {
+  const db = await openModelDB();
+  const tx = db.transaction("models", "readwrite");
+  const store = tx.objectStore("models");
+  await store.put({ filename, data: blob });
+  await tx.complete;
+  db.close();
+  localStorage.setItem("llm_model_downloaded", "true");
+}
+
+async function loadModelFromIndexedDB(filename) {
+  const db = await openModelDB();
+  const tx = db.transaction("models", "readonly");
+  const store = tx.objectStore("models");
+  const modelRecord = await store.get(filename);
+  await tx.complete;
+  db.close();
+  if (modelRecord && modelRecord.data instanceof Blob) {
+    return modelRecord.data;
+  }
+  return null;
+}
+
+// --- Main hook ---
 export const useLLM = () => {
   const [isModelLoaded, setIsModelLoaded] = useState(false);
   const [modelPath, setModelPath] = useState("");
   const [statusMessage, setStatusMessage] = useState("");
   const [downloadProgress, setDownloadProgress] = useState(0);
-  const [isLoading, setIsLoading] = useState(false); // Add loading state
+  const [isLoading, setIsLoading] = useState(false);
+  const llmInstance = useRef(null);
 
   const MODEL_URL =
-    "https://huggingface.co/mradermacher/TinyMistral-248M-Chat-v4-GGUF/resolve/main/TinyMistral-248M-Chat-v4.IQ4_XS.gguf";
-  const MODEL_FILENAME = "TinyMistral-248M-Chat-v4.IQ4_XS.gguf";
-  const initialPrompt = "Hello Luna, how can you assist me today?";
+    "https://huggingface.co/afrideva/TinyMistral-248M-GGUF/resolve/main/tinymistral-248m.q2_k.gguf";
+  const MODEL_FILENAME = "tinymistral-248m.q2_k.gguf";
 
   useEffect(() => {
     checkModelExists();
@@ -22,105 +93,83 @@ export const useLLM = () => {
   const checkModelExists = async () => {
     try {
       if (isPlatform("capacitor")) {
-        try {
-          await Filesystem.mkdir({
-            path: "models",
-            directory: Directory.Data,
-            recursive: true,
-          });
+        await Filesystem.mkdir({
+          path: "models",
+          directory: Directory.Data,
+          recursive: true,
+        });
+        const result = await Filesystem.readdir({
+          path: "models",
+          directory: Directory.Data,
+        });
 
-          const result = await Filesystem.readdir({
-            path: "models",
-            directory: Directory.Data,
-          });
+        const modelExists = result.files.some(
+          (file) => file.name === MODEL_FILENAME
+        );
 
-          const modelExists = result.files.some(
-            (file) => file.name === MODEL_FILENAME
-          );
-
-          if (modelExists) {
-            const modelFilePath = `${Directory.Data}/models/${MODEL_FILENAME}`;
-            setModelPath(modelFilePath);
-            setIsModelLoaded(true);
-            setStatusMessage("Model loaded from device storage");
-            initializeModel(modelFilePath);
-            return true;
-          } else {
-            console.log(
-              "Model not found in device storage, starting download..."
-            );
-            await downloadModel();
-          }
-        } catch (err) {
-          console.error("Error checking model file:", err);
+        if (modelExists) {
+          const modelFilePath = `${Directory.Data}/models/${MODEL_FILENAME}`;
+          setModelPath(modelFilePath);
+          setIsModelLoaded(true);
+          setStatusMessage("Model loaded from device storage");
+          initializeModel(modelFilePath);
+          return true;
+        } else {
+          await downloadModel();
         }
       } else {
-        // Web implementation - check IndexedDB
+        // Try OPFS first
         try {
-          const modelDownloaded =
-            localStorage.getItem("llm_model_downloaded") === "true";
-
-          if (modelDownloaded) {
-            console.log(
-              "Model download flag found in localStorage, checking IndexedDB..."
-            );
-          }
-
-          const db = await openModelDB();
-          const tx = db.transaction("models", "readonly");
-          const store = tx.objectStore("models");
-          const modelRecord = await store.get(MODEL_FILENAME);
-
-          if (modelRecord) {
-            console.log(
-              "Model found in IndexedDB, size:",
-              formatBytes(modelRecord.data.size)
-            );
-            setStatusMessage("Model found in browser storage");
-
-            const blob = modelRecord.data;
-            const blobUrl = URL.createObjectURL(blob);
-            setModelPath(blobUrl);
+          const opfsModel = await loadModelFromOPFS(MODEL_FILENAME);
+          if (opfsModel) {
+            // Instead of using a blob: URL, use the HTTP path
+            const opfsHttpPath = `/models/${MODEL_FILENAME}`;
+            setModelPath(opfsHttpPath);
             setIsModelLoaded(true);
-
-            initializeModel(blobUrl);
-
-            await tx.complete;
-            db.close();
+            setStatusMessage("Model loaded from browser storage bucket (OPFS) via Service Worker");
+            initializeModel(opfsHttpPath);
             return true;
-          } else {
-            if (modelDownloaded) {
-              console.warn(
-                "Model flag found in localStorage but model not in IndexedDB, clearing flag"
-              );
-              localStorage.removeItem("llm_model_downloaded");
-              localStorage.removeItem("llm_model_path");
-              localStorage.removeItem("llm_model_timestamp");
-            }
+          }
+        } catch (e) {
+          // OPFS not supported or not found, fallback to IndexedDB
+        }
 
-            const publicModelPath = `${process.env.PUBLIC_URL}/models/${MODEL_FILENAME}`;
-
-            try {
-              const response = await fetch(publicModelPath, { method: "HEAD" });
-              if (response.ok) {
-                setModelPath(publicModelPath);
-                setIsModelLoaded(true);
-                setStatusMessage("Model loaded from public folder");
-                initializeModel(publicModelPath);
-                return true;
-              }
-            } catch (err) {
-              console.log("Model not found in public folder");
-            }
+        // Fallback: IndexedDB
+        const modelDownloaded =
+          localStorage.getItem("llm_model_downloaded") === "true";
+        const idbModel = await loadModelFromIndexedDB(MODEL_FILENAME);
+        if (idbModel) {
+          const blobUrl = URL.createObjectURL(idbModel);
+          setModelPath(blobUrl);
+          setIsModelLoaded(true);
+          setStatusMessage("Model found in browser IndexedDB");
+          initializeModel(blobUrl);
+          return true;
+        } else {
+          if (modelDownloaded) {
+            localStorage.removeItem("llm_model_downloaded");
+            localStorage.removeItem("llm_model_path");
+            localStorage.removeItem("llm_model_timestamp");
           }
 
-          db.close();
-        } catch (err) {
-          console.error("Error checking model in IndexedDB:", err);
-          setStatusMessage("Error checking browser storage");
+          // Check in public folder
+          const publicModelPath = `${process.env.PUBLIC_URL}/models/${MODEL_FILENAME}`;
+          try {
+            const response = await fetch(publicModelPath, { method: "HEAD" });
+            if (response.ok) {
+              // When initializing the model, use the HTTP path:
+              const publicModelPath = `/models/${MODEL_FILENAME}`;
+              setModelPath(publicModelPath);
+              setIsModelLoaded(true);
+              setStatusMessage("Model loaded from Service Worker/OPFS or network");
+              initializeModel(publicModelPath);
+              return true;
+            }
+          } catch (err) {
+            // Not found in public folder
+          }
         }
       }
-
       setStatusMessage("Model not found, needs download");
       return false;
     } catch (err) {
@@ -132,57 +181,153 @@ export const useLLM = () => {
   const downloadModel = async () => {
     try {
       console.log("Starting model download...");
-      setIsLoading(true); // Set loading state when download starts
-      
-      // Ensure models directory exists
-      await Filesystem.mkdir({
-        path: "models",
-        directory: Directory.Data,
-        recursive: true,
-      });
-  
+      setIsLoading(true);
+
+      // Safely create the models directory for Capacitor
+      if (isPlatform("capacitor")) {
+        try {
+          await Filesystem.mkdir({
+            path: "models",
+            directory: Directory.Data,
+            recursive: true,
+          });
+        } catch (mkdirErr) {
+          if (!mkdirErr.message.includes("already exist")) {
+            throw mkdirErr;
+          }
+        }
+      }
+
       const response = await fetch(MODEL_URL);
       if (!response.ok) {
         throw new Error(`Failed to download model: ${response.statusText}`);
       }
-  
+
+      const contentType = response.headers.get("Content-Type");
+      if (!contentType || contentType.includes("text/html")) {
+        throw new Error(
+          "Download failed: Received HTML instead of model file. Check your model URL or authentication."
+        );
+      }
+
       const reader = response.body.getReader();
       const contentLength = +response.headers.get("Content-Length");
       let receivedLength = 0;
       const chunks = [];
-  
+
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
         chunks.push(value);
         receivedLength += value.length;
-  
-        // Calculate and update download progress
+
         const progress = Math.floor((receivedLength / contentLength) * 100);
         setDownloadProgress(progress);
         setStatusMessage(`Downloading model: ${progress}%`);
       }
-  
+
       const blob = new Blob(chunks);
-      const modelFilePath = `${Directory.Data}/models/${MODEL_FILENAME}`;
-      
+
+      // Additional check: If blob is suspiciously small, abort
+      if (blob.size < 1024 * 1024) {
+        const text = await blob.text();
+        if (text.startsWith("<!DOCTYPE html") || text.startsWith("<html")) {
+          throw new Error(
+            "Downloaded file is HTML, not a model. Check your Hugging Face permissions or bandwidth limits."
+          );
+        }
+      }
+
+      // --- Browser: Try OPFS first ---
+      if (!isPlatform("capacitor")) {
+        try {
+          await saveModelToOPFS(MODEL_FILENAME, blob);
+          // After saving, use HTTP path for model loading
+          const opfsHttpPath = `/models/${MODEL_FILENAME}`;
+          setModelPath(opfsHttpPath);
+          setIsModelLoaded(true);
+          setStatusMessage("Model downloaded and saved to browser storage bucket (OPFS) via Service Worker");
+          initializeModel(opfsHttpPath);
+          return;
+        } catch (e) {
+          console.error("OPFS save failed:", e);
+          // OPFS not supported, fallback to IndexedDB
+          await saveModelToIndexedDB(MODEL_FILENAME, blob);
+          const idbUrl = URL.createObjectURL(blob);
+          setModelPath(idbUrl);
+          setIsModelLoaded(true);
+          setStatusMessage("Model downloaded and saved to IndexedDB");
+          initializeModel(idbUrl);
+          return;
+        }
+      }
+
+      // --- Capacitor: Save to Filesystem ---
+      const base64Data = await blobToBase64(blob);
+      const modelFilePath = `models/${MODEL_FILENAME}`;
       await Filesystem.writeFile({
         path: modelFilePath,
-        data: blob,
+        data: base64Data,
         directory: Directory.Data,
-        recursive: true  // Add recursive flag for file creation
+        recursive: true,
       });
-      console.log("Model downloaded and saved to:", modelFilePath);
+
       setModelPath(modelFilePath);
       setIsModelLoaded(true);
       setStatusMessage("Model downloaded and ready to use");
       initializeModel(modelFilePath);
     } catch (err) {
       console.error("Error downloading model:", err);
-      setStatusMessage("Failed to download model");
+      setStatusMessage("Failed to download model: " + err.message);
     } finally {
-      setIsLoading(false); // Clear loading state when done
+      setIsLoading(false);
     }
+  };
+
+  const initializeModel = (modelFilePath) => {
+    console.log("Initializing LLM model from path:", modelFilePath);
+
+    llmInstance.current = new LLM(
+      "GGUF_CPU",
+      modelFilePath,
+      () => setIsModelLoaded(true),
+      (text) => {
+        setResponse((prev) => prev + text);
+      },
+      () => console.log("Model run complete")
+    );
+
+    llmInstance.current.load_worker();
+  };
+
+  const generateResponse = async (prompt) => {
+    return new Promise((resolve) => {
+      let fullResponse = "";
+
+      llmInstance.current.callback = (text) => {
+        fullResponse += text;
+        setResponse(fullResponse);
+      };
+
+      llmInstance.current.run({
+        prompt: prompt,
+        top_k: 1,
+      });
+
+      llmInstance.current.onComplete = () => resolve(fullResponse);
+    });
+  };
+
+  const blobToBase64 = (blob) => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = reject;
+      reader.onload = () => {
+        const base64String = reader.result.split(",")[1];
+        resolve(base64String);
+      };
+      reader.readAsDataURL(blob);
+    });
   };
 
   return {
@@ -191,6 +336,7 @@ export const useLLM = () => {
     statusMessage,
     downloadProgress,
     downloadModel,
-    isLoading, // Expose loading state
+    isLoading,
+    generateResponse,
   };
 };
