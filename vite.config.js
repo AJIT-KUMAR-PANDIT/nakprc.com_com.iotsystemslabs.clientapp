@@ -6,26 +6,27 @@ import tailwindcss from "@tailwindcss/vite";
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
-    host: "0.0.0.0", // Allow connections from any IP
+    host: "0.0.0.0",
     port: 5173,
-    strictPort: true, // Don't try another port if 3000 is in use
+    strictPort: true,
     hmr: {
-      // Allow HMR from any host including ngrok
-      clientPort: 443, // Use 443 for ngrok HTTPS tunnels
-      host: "localhost", // Keep host as localhost for HMR websocket
+      clientPort: 443, // Ensure this matches your server's protocol
+      host: "localhost",
+      protocol: "ws", // Change to "wss" if using HTTPS
     },
     proxy: {
-      // Add proxy configuration if needed
+      // Ensure proxy settings are correct if needed
     },
-    cors: true, // Enable CORS
+    cors: true,
     fs: {
-      strict: false, // Allow serving files from outside of the project root
+      strict: false,
     },
     watch: {
-      usePolling: true, // Use polling for file changes (helps with some network setups)
+      usePolling: true,
     },
-    open: false, // Don't open browser automatically
-    https: false, // Use HTTP by default
-    allowedHosts: ["localhost", ".ngrok.io", ".ngrok-free.app", "all"], // Allow these hosts to connect
+    open: false,
+    https: false, // Change to true if using HTTPS
+    allowedHosts: ["localhost", ".ngrok.io", ".ngrok-free.app"], // Consider removing "all"
+    middlewareMode: false,
   },
 });

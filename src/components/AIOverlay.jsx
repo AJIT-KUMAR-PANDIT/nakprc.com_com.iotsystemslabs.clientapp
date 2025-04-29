@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import "../styles/ai-overlay.css";
 import { useLLM } from "../services/llmService";
 import { useTTS } from "../services/ttsService";
@@ -11,7 +11,14 @@ const AIOverlay = ({ isOpen, onClose, onListen, isListening }) => {
   const [response, setResponse] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
 
-  const { speak, isSpeaking, onEnd: onTTSEnd } = useTTS(); // <-- Add onEnd if your TTS hook supports it
+  const listeningRef = useRef(isListening);
+  const debounceTimer = useRef(null);
+
+  useEffect(() => {
+    listeningRef.current = isListening;
+  }, [isListening]);
+
+  const { speak, isSpeaking } = useTTS();
   const {
     generateResponse,
     isModelLoaded,
@@ -19,25 +26,73 @@ const AIOverlay = ({ isOpen, onClose, onListen, isListening }) => {
     downloadModel,
     downloadProgress,
     statusMessage,
-    isCheckingModel, // Add this destructuring
+    isCheckingModel,
+    redownloadModel,
+    error,
   } = useLLM();
+  
   const {
     startListening: startSpeechRecognition,
     stopListening: stopSpeechRecognition,
     transcript: recognizedText,
-    isListening: isRecognizing,
   } = useSpeechRecognition();
 
-  // Reference to track if we're in listening mode
-  const listeningRef = useRef(isListening);
+  // Process the user command - define with useCallback to include in dependency arrays
+  const processCommand = useCallback(async (text) => {
+    if (isProcessing) return;
+    setIsProcessing(true);
+    setTranscript(text);
 
-  useEffect(() => {
-    listeningRef.current = isListening;
-  }, [isListening]);
+    // Wait for 3 seconds before sending to LLM (pause after user finishes speaking)
+    await new Promise((resolve) => setTimeout(resolve, 3000));
 
-  // Handle wake word detection
-  // Debounce timer ref
-  const debounceTimer = useRef(null);
+    try {
+      // Always send the full sentence to LLM
+      const llmResponse = await generateResponse(text);
+
+      // Extract system and user lines
+      let systemUrl = null;
+      let userResponse = null;
+      if (llmResponse) {
+        // Match lines like: system: http://nakprciotsystemslabs.local/...
+        const systemMatch = llmResponse.match(/^system:\s*(.+)$/m);
+        if (systemMatch) {
+          systemUrl = systemMatch[1].trim();
+        }
+        // Match lines like: user: ...
+        const userMatch = llmResponse.match(/^user:\s*(.+)$/m);
+        if (userMatch) {
+          userResponse = userMatch[1].trim();
+        }
+      }
+
+      // If system URL is present, call the device control API
+      if (systemUrl) {
+        try {
+          await fetch(systemUrl);
+        } catch (err) {
+          console.error("Device control API error:", err);
+        }
+      }
+
+      // If user response is present, speak it
+      if (userResponse) {
+        setResponse(userResponse);
+        await speak(userResponse);
+      } else {
+        // fallback: speak the whole LLM response
+        setResponse(llmResponse);
+        await speak(llmResponse);
+      }
+    } catch (error) {
+      console.error("LLM error:", error);
+      const errorResponse = "Sorry, I had trouble processing your request";
+      setResponse(errorResponse);
+      await speak(errorResponse);
+    }
+
+    setIsProcessing(false);
+  }, [isProcessing, generateResponse, speak]);
 
   useEffect(() => {
     if (recognizedText) {
@@ -73,84 +128,7 @@ const AIOverlay = ({ isOpen, onClose, onListen, isListening }) => {
         clearTimeout(debounceTimer.current);
       }
     };
-  }, [recognizedText, isOpen, isListening]);
-
-  // Process the user command
-  const processCommand = async (text) => {
-    if (isProcessing) return;
-    setIsProcessing(true);
-    setTranscript(text);
-
-    // Wait for 3 seconds before sending to LLM (pause after user finishes speaking)
-    await new Promise((resolve) => setTimeout(resolve, 3000));
-
-    try {
-      // Always send the full sentence to LLM
-      const llmResponse = await generateResponse(text);
-
-      // Extract system and user lines
-      let systemUrl = null;
-      let userResponse = null;
-      if (llmResponse) {
-        // Match lines like: system: http://nakprciotsystemslabs.local/...
-        const systemMatch = llmResponse.match(/^system:\s*(.+)$/m);
-        if (systemMatch) {
-          systemUrl = systemMatch[1].trim();
-        }
-        // Match lines like: user: ...
-        const userMatch = llmResponse.match(/^user:\s*(.+)$/m);
-        if (userMatch) {
-          userResponse = userMatch[1].trim();
-        }
-      }
-
-      // If system URL is present, call the device control API
-      if (systemUrl) {
-        try {
-          const result = await fetch(systemUrl);
-          // Optionally, you can check result.ok and handle errors
-        } catch (err) {
-          console.error("Device control API error:", err);
-        }
-      }
-
-      // If user response is present, speak it
-      if (userResponse) {
-        setResponse(userResponse);
-        await speak(userResponse);
-      } else {
-        // fallback: speak the whole LLM response
-        setResponse(llmResponse);
-        await speak(llmResponse);
-      }
-    } catch (error) {
-      console.error("LLM error:", error);
-      const errorResponse = "Sorry, I had trouble processing your request";
-      setResponse(errorResponse);
-      await speak(errorResponse);
-    }
-
-    setIsProcessing(false);
-  };
-
-  // Helper to speak and wait for TTS to finish
-  const speakAndWait = (text) => {
-    return new Promise((resolve) => {
-      speak(text);
-      // If your TTS hook provides an onEnd callback, use it:
-      if (typeof onTTSEnd === 'function') {
-        onTTSEnd(resolve);
-      } else {
-        // Fallback: poll isSpeaking
-        const interval = setInterval(() => {
-          if (!isSpeaking) {
-            clearInterval(interval);
-            resolve();
-          }
-        }, 100);
-      }
-    });
-  };
+  }, [recognizedText, isOpen, isListening, onListen, processCommand]);
 
   useEffect(() => {
     if (isOpen) {
@@ -180,26 +158,9 @@ const AIOverlay = ({ isOpen, onClose, onListen, isListening }) => {
     } else {
       setAudioVisualizer([]);
     }
-  }, [isListening]);
+  }, [isListening, startSpeechRecognition, stopSpeechRecognition]);
 
   if (!isOpen) return null;
-
-  // Inside your component where you handle the response
-  const handleUserInput = async (userInput) => {
-    try {
-      setIsProcessing(true);
-      const aiResponse = await generateResponse(userInput);
-      setResponse(aiResponse);
-
-      // Make sure to call the TTS function with the response
-      console.log("Calling TTS with response:", aiResponse);
-      await speak(aiResponse);
-    } catch (error) {
-      console.error("Error processing input:", error);
-    } finally {
-      setIsProcessing(false);
-    }
-  };
 
   return (
     <div className="ai-overlay enhanced-glass">
@@ -258,13 +219,12 @@ const AIOverlay = ({ isOpen, onClose, onListen, isListening }) => {
           </div>
         )}
 
-        {/* Update the button disable logic */}
         <button
           className={`ai-action-button enhanced-action ${
             isListening ? "listening" : ""
           }`}
           onClick={onListen}
-          disabled={!isModelLoaded} // Only enable when model is loaded
+          disabled={!isModelLoaded}
         >
           {isListening ? "Stop" : "Listen"}
         </button>
@@ -283,7 +243,7 @@ const AIOverlay = ({ isOpen, onClose, onListen, isListening }) => {
                     ></div>
                   </div>
                   <div className="progress-text">
-                    {Math.round(downloadProgress)}%
+                    {Math.round(downloadProgress)}% Downloaded
                   </div>
                 </div>
                 <p className="download-info">Downloading AI model (150MB)...</p>
@@ -307,6 +267,23 @@ const AIOverlay = ({ isOpen, onClose, onListen, isListening }) => {
             <p>Checking for existing model...</p>
           </div>
         )}
+
+        {/* Add Reset Button for AI Model */}
+        <div className="ai-reset-container">
+          <p style={{ color: "#ff0000", fontWeight: "bold" }}>
+            Status: {statusMessage}
+          </p>
+          {error && (
+            <div style={{ color: "#ff0000", fontWeight: "bold" }}>{error}</div>
+          )}
+          <button
+            onClick={redownloadModel}
+            disabled={isLoading}
+            className="ai-reset-button enhanced-reset"
+          >
+            Reset AI Model
+          </button>
+        </div>
 
         <div className="ai-tech-elements">
           <div className="ai-tech-circle top-left"></div>
