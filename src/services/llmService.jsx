@@ -34,6 +34,7 @@ export const useLLM = () => {
   const [deviceInfo, setDeviceInfo] = useState(null);
   const [platform, setPlatform] = useState("web");
   const [isDownloading, setIsDownloading] = useState(false); // Add flag for download status
+  const [isModelStored, setIsModelStored] = useState(false); // Add flag for model storage status
 
   const llmInstance = useRef(null);
 
@@ -107,7 +108,7 @@ export const useLLM = () => {
   };
 
   const downloadModel = async () => {
-    if (isDownloading) return; // Prevent multiple downloads
+    if (isDownloading || isModelStored) return; // Prevent multiple downloads
     setIsDownloading(true); // Set flag to indicate download in progress
 
     setStatusMessage("Downloading model...");
@@ -126,8 +127,10 @@ export const useLLM = () => {
 
       if ("storageBuckets" in navigator) {
         await saveModelToStorageBucket(modelFileName, buffer);
+        setIsModelStored(true); // Mark model as stored
       } else if (platform === "web") {
-        await saveModelToBrowserStorage(modelFileName, buffer);
+        await saveModelToStorageBucket(modelFileName, buffer);
+        setIsModelStored(true); // Mark model as stored
       } else {
         await saveModelToCapacitor(buffer);
       }
@@ -183,7 +186,19 @@ export const useLLM = () => {
 
   const modelFileExists = useCallback(async () => {
     if (platform === "web") {
-      return await checkFileExistsInBrowserStorage(modelFileName);
+      try {
+        const bucketName = "valid-bucket-name"; // Update to a valid bucket name
+        const bucket = await navigator.storageBuckets.open(bucketName, {
+          quota: 1024 * 1024 * 284, // 284 MB quota
+          persistent: true, // Persistent storage
+        });
+
+        const fileHandle = await bucket.getFileHandle(modelFileName);
+        return fileHandle !== null;
+      } catch (err) {
+        console.error("Failed to check file existence in storage bucket:", err);
+        return false;
+      }
     } else {
       try {
         if (Filesystem) {
@@ -200,6 +215,7 @@ export const useLLM = () => {
     }
   }, [platform, modelFileName]); // Add dependencies
 
+  // Update all instances where 'myBucket' is used to 'valid-bucket-name'
   const checkModelExists = useCallback(async () => {
     setIsLoading(true);
     setStatusMessage("Checking for model...");
@@ -223,12 +239,16 @@ export const useLLM = () => {
           setStatusMessage("Model ready");
           await showToast("Model loaded successfully");
         } else {
-          setStatusMessage("Model invalid. Redownloading...");
+          setStatusMessage(
+            "Model invalid. Clearing storage and redownloading..."
+          );
           if (platform === "web") {
             await deleteModelFromBrowserStorage(modelFileName);
           } else {
             await deleteModelFromCapacitor();
+            await deleteModelFromStorageBucket(modelFileName); // Clear storage bucket
           }
+          setIsModelStored(false); // Reset model storage flag
           await downloadModel();
           const newModelData = await loadModelFromStorage();
           await initializeModel(newModelData);
@@ -467,7 +487,7 @@ const saveModelToStorageBucket = async (filename, buffer) => {
 
       console.log("Storage bucket created:", bucket);
 
-      const fileHandle = await bucket.getFileHandle(filename);
+      const fileHandle = await bucket.getFileHandle(filename, { create: true });
       const writable = await fileHandle.createWritable();
       await writable.write(buffer);
       await writable.close();
@@ -506,21 +526,30 @@ const loadModelFromStorageBucket = async (filename) => {
   }
 };
 
-const saveModelToBrowserStorage = async (filename, buffer) => {
-  try {
-    // Convert ArrayBuffer to JSON string for storage
-    const jsonData = JSON.stringify(Array.from(new Uint8Array(buffer)));
-    localStorage.setItem(filename, jsonData);
-    console.log(`File ${filename} saved successfully to browser storage`);
-  } catch (err) {
-    console.error("Failed to save model to browser storage:", err);
-    throw new Error(`Failed to save model: ${err.message}`);
+const deleteModelFromStorageBucket = async (filename) => {
+  if ("storageBuckets" in navigator) {
+    try {
+      const bucket = await navigator.storageBuckets.open("myBucket", {
+        quota: 1024 * 1024 * 284, // 284 MB quota
+        persistent: true, // Persistent storage
+      });
+
+      await bucket.deleteFile(filename);
+
+      console.log(`File ${filename} deleted successfully from storage bucket`);
+    } catch (err) {
+      console.error("Failed to delete model from storage bucket:", err);
+      throw new Error(`Failed to delete model: ${err.message}`);
+    }
+  } else {
+    console.warn("Storage Buckets API not supported");
+    throw new Error("Storage Buckets API not supported");
   }
 };
 
+// Remove the deleteModelFromBrowserStorage function
 const deleteModelFromBrowserStorage = async (filename) => {
   try {
-    // Remove the file from local storage
     localStorage.removeItem(filename);
     console.log(`File ${filename} deleted successfully from browser storage`);
   } catch (err) {
@@ -534,7 +563,7 @@ const deleteModelFromCapacitor = async () => {
     if (!Filesystem) throw new Error("Filesystem not available");
 
     await Filesystem.deleteFile({
-      path: modelFileName, // Ensure modelFileName is accessible here
+      path: modelFileName,
       directory: Directory.Data,
     });
 
