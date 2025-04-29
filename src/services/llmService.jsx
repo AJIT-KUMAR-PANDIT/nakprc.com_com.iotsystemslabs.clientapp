@@ -6,7 +6,6 @@ import { LLM } from "../llm.js/llm.js";
 
 // Capacitor plugin references
 let Filesystem, Directory, Device, Toast;
-
 // Detect if Capacitor is available
 const isCapacitorAvailable = () =>
   typeof window !== "undefined" && window.Capacitor !== undefined;
@@ -30,6 +29,7 @@ export const useLLM = () => {
   const [error, setError] = useState(null);
   const [deviceInfo, setDeviceInfo] = useState(null);
   const [platform, setPlatform] = useState("web");
+  const [isDownloading, setIsDownloading] = useState(false); // Add flag for download status
 
   const llmInstance = useRef(null);
 
@@ -107,6 +107,9 @@ export const useLLM = () => {
   };
 
   const downloadModel = async () => {
+    if (isDownloading) return; // Prevent multiple downloads
+    setIsDownloading(true); // Set flag to indicate download in progress
+
     setStatusMessage("Downloading model...");
     setDownloadProgress(0);
 
@@ -119,53 +122,18 @@ export const useLLM = () => {
         );
       }
 
-      const contentLength = Number(
-        response.headers.get("Content-Length") || "0"
-      );
-      const reader = response.body.getReader();
-      let receivedLength = 0;
-      const chunks = [];
+      const buffer = await response.arrayBuffer();
 
-      // Read the stream
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        chunks.push(value);
-        receivedLength += value.length;
-
-        // Update progress
-        if (contentLength) {
-          const progress = Math.floor((receivedLength / contentLength) * 100);
-          setDownloadProgress(progress);
-          setStatusMessage(`Downloading model: ${progress}%`);
-        }
-      }
-
-      // Concatenate chunks into a single array buffer
-      const buffer = new Uint8Array(receivedLength);
-      let position = 0;
-      for (let chunk of chunks) {
-        buffer.set(chunk, position);
-        position += chunk.length;
-      }
-
-      // Save to appropriate storage
-      if (platform === "web") {
-        await saveModelToOPFS(modelFileName, buffer);
+      if ("storageBuckets" in navigator) {
+        await saveModelToStorageBucket(modelFileName, buffer);
+      } else if (platform === "web") {
+        await saveModelToBrowserStorage(modelFileName, buffer);
       } else {
         await saveModelToCapacitor(buffer);
       }
 
-      console.log("Model downloaded and saved successfully");
-      setStatusMessage("Model downloaded. Initializing...");
-
-      // Initialize the model
-      await initializeModel(buffer.buffer);
-      setIsModelLoaded(true);
-      setStatusMessage("Model ready");
-
-      await showToast("Model downloaded and ready");
+      setStatusMessage("Model download initiated");
+      await showToast("Model download initiated");
 
       return true;
     } catch (err) {
@@ -175,21 +143,20 @@ export const useLLM = () => {
 
       await showToast(`Download failed: ${err.message}`, "long");
 
-      // Clean up partial downloads
-      if (platform === "web") {
-        await deleteModelFromOPFS(modelFileName);
-      } else {
-        await deleteModelFromCapacitor();
-      }
-
       throw err;
+    } finally {
+      setIsDownloading(false); // Reset flag after download attempt
     }
   };
 
   const loadModelFromStorage = async () => {
     if (platform === "web") {
-      // Web platform uses OPFS
-      return await loadModelFromOPFS(modelFileName);
+      // Web platform uses storage bucket
+      if ("storageBuckets" in navigator) {
+        return await loadModelFromStorageBucket(modelFileName);
+      } else {
+        return await loadModelFromBrowserStorage(modelFileName);
+      }
     } else {
       // Mobile platform uses Capacitor Filesystem
       try {
@@ -216,7 +183,7 @@ export const useLLM = () => {
 
   const modelFileExists = useCallback(async () => {
     if (platform === "web") {
-      return await checkFileExistsInOPFS(modelFileName);
+      return await checkFileExistsInBrowserStorage(modelFileName);
     } else {
       try {
         if (Filesystem) {
@@ -253,7 +220,7 @@ export const useLLM = () => {
         } else {
           console.log("Invalid model found, redownloading...");
           if (platform === "web") {
-            await deleteModelFromOPFS(modelFileName);
+            await deleteModelFromBrowserStorage(modelFileName);
           } else {
             await deleteModelFromCapacitor();
           }
@@ -386,7 +353,7 @@ export const useLLM = () => {
       }
 
       if (platform === "web") {
-        await deleteModelFromOPFS(modelFileName);
+        await deleteModelFromBrowserStorage(modelFileName);
       } else {
         await deleteModelFromCapacitor();
       }
@@ -408,19 +375,58 @@ export const useLLM = () => {
     }
   };
 
-  const deleteModelFromOPFS = async (filename) => {
+  const deleteModelFromBrowserStorage = async (filename) => {
     try {
-      // Implement logic to delete the file from OPFS using the filename
-      console.log(`Attempting to delete ${filename} from OPFS`);
-      // Placeholder logic for deletion
-      console.warn("deleteModelFromOPFS is not yet implemented.");
+      // Implement logic to delete the file from browser storage
+      console.log(`Attempting to delete ${filename} from browser storage`);
+      localStorage.removeItem(filename);
+      console.log(`File ${filename} deleted successfully from browser storage`);
     } catch (e) {
-      console.error("Error deleting model from OPFS:", e);
+      console.error("Error deleting model from browser storage:", e);
     }
   };
 
   const deleteModelFromCapacitor = async () => {
     console.warn("deleteModelFromCapacitor is not yet implemented.");
+  };
+
+  const saveModelToBrowserStorage = async (filename, buffer) => {
+    try {
+      // Implement logic to save the buffer to browser storage
+      console.log(`Attempting to save ${filename} to browser storage`);
+      localStorage.setItem(filename, JSON.stringify(Array.from(buffer)));
+      console.log(`File ${filename} saved successfully to browser storage`);
+    } catch (err) {
+      console.error("Failed to save model to browser storage:", err);
+      throw new Error(`Failed to save model: ${err.message}`);
+    }
+  };
+
+  const loadModelFromBrowserStorage = async (filename) => {
+    try {
+      // Implement logic to load the file from browser storage
+      console.log(`Attempting to load ${filename} from browser storage`);
+      const data = localStorage.getItem(filename);
+      if (!data)
+        throw new Error(`File ${filename} not found in browser storage`);
+      const buffer = new Uint8Array(JSON.parse(data));
+      console.log(`File ${filename} loaded successfully from browser storage`);
+      return buffer.buffer;
+    } catch (err) {
+      console.error("Failed to load model from browser storage:", err);
+      throw new Error(`Failed to load model: ${err.message}`);
+    }
+  };
+
+  const checkFileExistsInBrowserStorage = async (filename) => {
+    try {
+      // Implement logic to check if the file exists in browser storage
+      const data = localStorage.getItem(filename);
+      return data !== null;
+    } catch (err) {
+      console.error("Failed to check file existence in browser storage:", err);
+      return false;
+    }
   };
 
   return {
@@ -455,43 +461,6 @@ const isValidGGUF = async (modelData) => {
   }
 };
 
-const checkFileExistsInOPFS = async (filename) => {
-  try {
-    // Implement logic to check if the file exists in OPFS
-    // This is a placeholder logic, replace with actual file existence check
-    const fileHandle = await window.showDirectoryPicker();
-    for await (const entry of fileHandle.values()) {
-      if (entry.kind === "file" && entry.name === filename) {
-        console.log(`File ${filename} exists in OPFS`);
-        return true;
-      }
-    }
-    console.warn(`File ${filename} does not exist in OPFS`);
-    return false;
-  } catch (err) {
-    console.error("Failed to check file existence in OPFS:", err);
-    return false;
-  }
-};
-
-const saveModelToOPFS = async (filename, buffer) => {
-  try {
-    // Implement logic to save the buffer to OPFS using the filename
-    console.log(`Saving ${filename} to OPFS`);
-    // Placeholder logic for saving
-    const fileHandle = await window.showSaveFilePicker({
-      suggestedName: filename,
-    });
-    const writable = await fileHandle.createWritable();
-    await writable.write(buffer);
-    await writable.close();
-    console.log(`File ${filename} saved successfully to OPFS`);
-  } catch (err) {
-    console.error("Failed to save model to OPFS:", err);
-    throw new Error(`Failed to save model: ${err.message}`);
-  }
-};
-
 const saveModelToCapacitor = async (buffer) => {
   try {
     if (!Filesystem) throw new Error("Filesystem not available");
@@ -517,20 +486,51 @@ const saveModelToCapacitor = async (buffer) => {
   }
 };
 
-const loadModelFromOPFS = async (filename) => {
-  try {
-    // Implement logic to load the file from OPFS using the filename
-    console.log(`Loading ${filename} from OPFS`);
-    // Placeholder logic for loading
-    const fileHandle = await window.showOpenFilePicker({
-      suggestedName: filename,
-    });
-    const file = await fileHandle[0].getFile();
-    const arrayBuffer = await file.arrayBuffer();
-    console.log(`File ${filename} loaded successfully from OPFS`);
-    return arrayBuffer;
-  } catch (err) {
-    console.error("Failed to load model from OPFS:", err);
-    throw new Error(`Failed to load model: ${err.message}`);
+const saveModelToStorageBucket = async (filename, buffer) => {
+  if ("storageBuckets" in navigator) {
+    try {
+      const bucket = await navigator.storageBuckets.open("myBucket", {
+        quota: 1024 * 1024 * 1284, // 284 MB quota
+        persistent: true, // Persistent storage
+      });
+
+      console.log("Storage bucket created:", bucket);
+
+      const fileHandle = await bucket.getFileHandle(filename);
+      const writable = await fileHandle.createWritable();
+      await writable.write(buffer);
+      await writable.close();
+
+      console.log(`File ${filename} saved successfully to storage bucket`);
+    } catch (err) {
+      console.error("Failed to save model to storage bucket:", err);
+      throw new Error(`Failed to save model: ${err.message}`);
+    }
+  } else {
+    console.warn("Storage Buckets API not supported");
+  }
+};
+
+const loadModelFromStorageBucket = async (filename) => {
+  if ("storageBuckets" in navigator) {
+    try {
+      const bucket = await navigator.storageBuckets.open("myBucket", {
+        quota: 1024 * 1024 * 284, // 284 MB quota
+        persistent: true, // Persistent storage
+      });
+
+      const fileHandle = await bucket.getFileHandle(filename);
+      const file = await fileHandle.getFile();
+      const buffer = await file.arrayBuffer();
+
+      console.log(`File ${filename} loaded successfully from storage bucket`);
+      return buffer;
+    } catch (err) {
+      console.error("Failed to load model from storage bucket:", err);
+      throw new Error(`Failed to load model: ${err.message}`);
+    }
+  } else {
+    console.warn("Storage Buckets API not supported");
+    throw new Error("Storage Buckets API not supported");
   }
 };
