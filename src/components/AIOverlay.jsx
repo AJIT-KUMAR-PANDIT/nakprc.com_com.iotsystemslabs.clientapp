@@ -1,6 +1,7 @@
+// AIOverlay.jsx
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import "../styles/ai-overlay.css";
-import { useLLM } from "../services/llmService"; // Import useLLM hook
+import { useLLM } from "../services/llmService";
 import { useTTS } from "../services/ttsService";
 import { useSpeechRecognition } from "../services/speechRecognitionService";
 
@@ -29,70 +30,64 @@ const AIOverlay = ({ isOpen, onClose, onListen, isListening }) => {
     isCheckingModel,
     redownloadModel,
     error,
-  } = useLLM(); // Use useLLM hook
-  
+    checkModelExists,
+  } = useLLM();
+
   const {
     startListening: startSpeechRecognition,
     stopListening: stopSpeechRecognition,
     transcript: recognizedText,
   } = useSpeechRecognition();
 
-  // Process the user command - define with useCallback to include in dependency arrays
-  const processCommand = useCallback(async (text) => {
-    if (isProcessing) return;
-    setIsProcessing(true);
-    setTranscript(text);
+  const processCommand = useCallback(
+    async (text) => {
+      if (isProcessing) return;
+      setIsProcessing(true);
+      setTranscript(text);
 
-    // Wait for 3 seconds before sending to LLM (pause after user finishes speaking)
-    await new Promise((resolve) => setTimeout(resolve, 3000));
+      await new Promise((resolve) => setTimeout(resolve, 3000));
 
-    try {
-      // Always send the full sentence to LLM
-      const llmResponse = await generateResponse(text);
-
-      // Extract system and user lines
-      let systemUrl = null;
-      let userResponse = null;
-      if (llmResponse) {
-        // Match lines like: system: http://nakprciotsystemslabs.local/...
-        const systemMatch = llmResponse.match(/^system:\s*(.+)$/m);
-        if (systemMatch) {
-          systemUrl = systemMatch[1].trim();
+      try {
+        const llmResponse = await generateResponse(text);
+        let systemUrl = null;
+        let userResponse = null;
+        if (llmResponse) {
+          const systemMatch = llmResponse.match(/^system:\s*(.+)$/m);
+          if (systemMatch) {
+            systemUrl = systemMatch[1].trim();
+          }
+          const userMatch = llmResponse.match(/^user:\s*(.+)$/m);
+          if (userMatch) {
+            userResponse = userMatch[1].trim();
+          }
         }
-        // Match lines like: user: ...
-        const userMatch = llmResponse.match(/^user:\s*(.+)$/m);
-        if (userMatch) {
-          userResponse = userMatch[1].trim();
+
+        if (systemUrl) {
+          try {
+            await fetch(systemUrl);
+          } catch (err) {
+            console.error("Device control API error:", err);
+          }
         }
+
+        if (userResponse) {
+          setResponse(userResponse);
+          await speak(userResponse);
+        } else {
+          setResponse(llmResponse);
+          await speak(llmResponse);
+        }
+      } catch (error) {
+        console.error("LLM error:", error);
+        const errorResponse = "Sorry, I had trouble processing your request";
+        setResponse(errorResponse);
+        await speak(errorResponse);
       }
 
-      // If system URL is present, call the device control API
-      if (systemUrl) {
-        try {
-          await fetch(systemUrl);
-        } catch (err) {
-          console.error("Device control API error:", err);
-        }
-      }
-
-      // If user response is present, speak it
-      if (userResponse) {
-        setResponse(userResponse);
-        await speak(userResponse);
-      } else {
-        // fallback: speak the whole LLM response
-        setResponse(llmResponse);
-        await speak(llmResponse);
-      }
-    } catch (error) {
-      console.error("LLM error:", error);
-      const errorResponse = "Sorry, I had trouble processing your request";
-      setResponse(errorResponse);
-      await speak(errorResponse);
-    }
-
-    setIsProcessing(false);
-  }, [isProcessing, generateResponse, speak]);
+      setIsProcessing(false);
+    },
+    [isProcessing, generateResponse, speak]
+  );
 
   useEffect(() => {
     if (recognizedText) {
@@ -105,7 +100,6 @@ const AIOverlay = ({ isOpen, onClose, onListen, isListening }) => {
       }
     }
 
-    // Debounce: Only process after user stops speaking for 1 second
     if (
       isListening &&
       recognizedText &&
@@ -119,10 +113,9 @@ const AIOverlay = ({ isOpen, onClose, onListen, isListening }) => {
         console.log("Processing full command:", fullText);
         setTranscript(fullText);
         processCommand(fullText);
-      }, 1000); // 1 second pause
+      }, 1000);
     }
 
-    // Cleanup timer on unmount or recognizedText change
     return () => {
       if (debounceTimer.current) {
         clearTimeout(debounceTimer.current);
@@ -160,22 +153,25 @@ const AIOverlay = ({ isOpen, onClose, onListen, isListening }) => {
     }
   }, [isListening, startSpeechRecognition, stopSpeechRecognition]);
 
+  useEffect(() => {
+    if (isOpen) {
+      checkModelExists();
+    }
+  }, [isOpen, checkModelExists]);
+
   if (!isOpen) return null;
 
   return (
     <div className="ai-overlay enhanced-glass">
       <div className="ai-overlay-background enhanced-glass"></div>
-
       <div className={`ai-overlay-content animated-entrance`}>
         <button className="ai-close-button enhanced-close" onClick={onClose}>
           <span>×</span>
         </button>
-
         <div className="ai-circle-container enhanced-shadow">
           <div className="ai-outer-circle enhanced-glow"></div>
           <div className="ai-middle-circle enhanced-glow"></div>
           <div className="ai-inner-circle enhanced-glow"></div>
-
           <div className="ai-core enhanced-core-glow">
             <div
               className={`ai-core-pulse ${
@@ -183,7 +179,6 @@ const AIOverlay = ({ isOpen, onClose, onListen, isListening }) => {
               }`}
             ></div>
           </div>
-
           {animationComplete && (
             <div className="ai-status-text enhanced-status-text">
               {isProcessing
@@ -196,7 +191,6 @@ const AIOverlay = ({ isOpen, onClose, onListen, isListening }) => {
             </div>
           )}
         </div>
-
         <div className="ai-visualizer-container">
           {audioVisualizer.map((height, index) => (
             <div
@@ -206,30 +200,25 @@ const AIOverlay = ({ isOpen, onClose, onListen, isListening }) => {
             ></div>
           ))}
         </div>
-
         {transcript && (
           <div className="ai-transcript">
             <p>You said: {transcript}</p>
           </div>
         )}
-
         {response && (
           <div className="ai-response">
             <p>Luna: {response}</p>
           </div>
         )}
-
         <button
           className={`ai-action-button enhanced-action ${
             isListening ? "listening" : ""
           }`}
           onClick={onListen}
-          disabled={!isModelLoaded}
+          disabled={!isModelLoaded || isLoading || isCheckingModel}
         >
           {isListening ? "Stop" : "Listen"}
         </button>
-
-        {/* Model download/progress UI */}
         {!isModelLoaded && !isCheckingModel && (
           <div className="ai-model-status">
             {isLoading ? (
@@ -253,7 +242,7 @@ const AIOverlay = ({ isOpen, onClose, onListen, isListening }) => {
                 <p>AI model required for voice assistant</p>
                 <button
                   className="model-download-button"
-                  onClick={downloadModel} // Trigger download and storage
+                  onClick={downloadModel}
                   disabled={isLoading}
                 >
                   Download Now
@@ -267,8 +256,6 @@ const AIOverlay = ({ isOpen, onClose, onListen, isListening }) => {
             <p>Checking for existing model...</p>
           </div>
         )}
-
-        {/* Add Reset Button for AI Model */}
         <div className="ai-reset-container">
           <p style={{ color: "#ff0000", fontWeight: "bold" }}>
             Status: {statusMessage}
@@ -284,7 +271,6 @@ const AIOverlay = ({ isOpen, onClose, onListen, isListening }) => {
             Reset AI Model
           </button>
         </div>
-
         <div className="ai-tech-elements">
           <div className="ai-tech-circle top-left"></div>
           <div className="ai-tech-circle top-right"></div>

@@ -1,18 +1,14 @@
-// src/services/LLMService.jsx
-// Enhanced implementation for both web and mobile platforms with Storage Buckets API fixes
-
+// useLLM.js
 import { useState, useEffect, useRef, useCallback } from "react";
 import { LLM } from "../llm.js/llm.js";
 
-// Model configuration
 const MODEL_CONFIG = {
   url: "https://huggingface.co/afrideva/TinyMistral-248M-GGUF/resolve/main/tinymistral-248m.q2_k.gguf",
   filename: "tinymistral-248m.q2_k.gguf",
   bucketName: "nakprciotsystemslabs",
-  size: "150MB", // For UI display
+  size: "150MB",
 };
 
-// Default LLM parameters
 const DEFAULT_LLM_PARAMS = {
   temp: 0.7,
   top_p: 0.9,
@@ -21,14 +17,11 @@ const DEFAULT_LLM_PARAMS = {
   max_tokens: 1024,
 };
 
-// Capacitor plugin references
 let Filesystem, Directory, Device, Toast;
 
-// Detect if Capacitor is available
 const isCapacitorAvailable = () =>
   typeof window !== "undefined" && window.Capacitor !== undefined;
 
-// Helper: Show toast cross-platform
 const showToast = async (message, duration = "short") => {
   if (isCapacitorAvailable() && Toast) {
     await Toast.show({ text: message, duration });
@@ -37,7 +30,6 @@ const showToast = async (message, duration = "short") => {
   }
 };
 
-// Hook: Unified LLM logic with improved error handling and loading states
 export const useLLM = () => {
   const [isModelLoaded, setIsModelLoaded] = useState(false);
   const [statusMessage, setStatusMessage] = useState("Initializing...");
@@ -55,7 +47,6 @@ export const useLLM = () => {
   const llmInstance = useRef(null);
   const abortController = useRef(new AbortController());
 
-  // Dynamic Capacitor plugin import
   useEffect(() => {
     if (isCapacitorAvailable()) {
       (async () => {
@@ -80,7 +71,6 @@ export const useLLM = () => {
     }
   }, []);
 
-  // Detect platform
   useEffect(() => {
     const detectPlatform = async () => {
       if (isCapacitorAvailable() && Device) {
@@ -100,17 +90,6 @@ export const useLLM = () => {
     detectPlatform();
   }, []);
 
-  // Check if Storage Buckets API is available (FIXED)
-  const isStorageBucketsSupported = useCallback(() => {
-    return (
-      typeof navigator !== "undefined" &&
-      navigator.storage &&
-      navigator.storage.buckets &&
-      typeof navigator.storage.buckets.open === "function"
-    );
-  }, []);
-
-  // Initialize model with improved error handling
   const initializeModel = async (buffer) => {
     if (!buffer) throw new Error("Empty model buffer");
 
@@ -125,17 +104,15 @@ export const useLLM = () => {
 
     return new Promise((resolve, reject) => {
       try {
-        const deviceType = "GGUF_CPU"; // Use CPU for compatibility
+        const deviceType = "GGUF_CPU";
         setStatusMessage(`Initializing model...`);
 
-        // Create on-progress callback for detailed status updates
         const onProgress = (progress) => {
           setStatusMessage(
             `Initializing model... ${Math.round(progress * 100)}%`
           );
         };
 
-        // Create new LLM instance with progress callback
         const llm = new LLM(
           deviceType,
           buffer,
@@ -153,45 +130,6 @@ export const useLLM = () => {
     });
   };
 
-  // Create or open storage bucket (for web) - FIXED IMPLEMENTATION
-  const getStorageBucket = useCallback(async () => {
-    if (!isStorageBucketsSupported()) {
-      throw new Error("Storage Buckets API not available");
-    }
-
-    try {
-      // Request permission first to avoid user gesture issues
-      const permission = await navigator.permissions.query({
-        name: "persistent-storage",
-      });
-
-      if (permission.state !== "granted") {
-        // Try to persist storage (may require user gesture)
-        const persisted = await navigator.storage.persist();
-        if (!persisted) {
-          console.warn("Storage may not be persistent");
-        }
-      }
-
-      // FIX: Use correct API - navigate to the storage buckets API first
-      // Then open our specific bucket
-      const bucket = await navigator.storage.buckets.open(
-        MODEL_CONFIG.bucketName,
-        {
-          quota: 300 * 1024 * 1024, // 300MB (ensure enough space for model)
-          durability: "strict",
-          persisted: true,
-        }
-      );
-
-      return bucket;
-    } catch (err) {
-      console.error("Failed to open storage bucket:", err);
-      throw new Error(`Storage bucket access failed: ${err.message}`);
-    }
-  }, [isStorageBucketsSupported]);
-
-  // Download model with progress tracking and abort capability
   const downloadModel = async () => {
     if (isDownloading || isModelStored) return;
 
@@ -242,12 +180,8 @@ export const useLLM = () => {
 
       const buffer = concatenated.buffer;
 
-      // Store model in appropriate storage
-      if (
-        platform === "web" &&
-        isStorageBucketsSupported()
-      ) {
-        await saveModelToStorageBucket(MODEL_CONFIG.filename, buffer);
+      if (platform === "web") {
+        await saveModelToIndexedDB(MODEL_CONFIG.filename, buffer);
       } else if (platform !== "web" && Filesystem) {
         await saveModelToCapacitor(buffer);
       } else {
@@ -255,10 +189,10 @@ export const useLLM = () => {
           "Your browser does not support persistent storage for AI models. Please use a supported browser or platform."
         );
         setError(
-          "No supported storage mechanism found (Storage Buckets API or Capacitor)."
+          "No supported storage mechanism found (IndexedDB or Capacitor)."
         );
         await showToast(
-          "No supported storage mechanism found. Try Chrome Canary with Storage Buckets enabled.",
+          "No supported storage mechanism found. Try a different browser or platform.",
           "long"
         );
         return null;
@@ -287,7 +221,6 @@ export const useLLM = () => {
     }
   };
 
-  // Cancel ongoing download
   const cancelDownload = () => {
     if (isDownloading && abortController.current) {
       abortController.current.abort();
@@ -296,42 +229,20 @@ export const useLLM = () => {
     }
   };
 
-  // Load model from appropriate storage - FIXED IMPLEMENTATION
   const loadModelFromStorage = async () => {
-    if (platform === "web" && isStorageBucketsSupported()) {
+    if (platform === "web") {
       try {
-        const bucket = await getStorageBucket();
-
-        try {
-          // FIX 1: Use correct API to access files in the bucket
-          // First get access to the file store inside the bucket
-          const fileStore = await bucket.access();
-
-          // Then get the file from the file store
-          const file = await fileStore.get(MODEL_CONFIG.filename);
-
-          if (!file) {
-            throw new Error(
-              `File ${MODEL_CONFIG.filename} not found in bucket`
-            );
-          }
-
-          const buffer = await file.arrayBuffer();
-          setModelSize(buffer.byteLength);
-          console.log(
-            `File ${MODEL_CONFIG.filename} loaded successfully from storage bucket (${buffer.byteLength} bytes)`
-          );
-          return buffer;
-        } catch (err) {
-          console.error("Failed to load model from storage bucket:", err);
-          throw new Error(`Failed to load model: ${err.message}`);
-        }
+        const buffer = await getModelFromIndexedDB(MODEL_CONFIG.filename);
+        setModelSize(buffer.byteLength);
+        console.log(
+          `File ${MODEL_CONFIG.filename} loaded successfully from IndexedDB (${buffer.byteLength} bytes)`
+        );
+        return buffer;
       } catch (err) {
-        console.error("Failed to access storage bucket:", err);
-        throw new Error(`Storage bucket access failed: ${err.message}`);
+        console.error("Failed to load model from IndexedDB:", err);
+        throw new Error(`Failed to load model: ${err.message}`);
       }
     } else if (platform !== "web") {
-      // Mobile platform uses Capacitor Filesystem
       try {
         if (!Filesystem) throw new Error("Filesystem not available");
 
@@ -340,7 +251,6 @@ export const useLLM = () => {
           directory: Directory.Data,
         });
 
-        // Convert base64 to ArrayBuffer
         const binaryString = atob(result.data);
         const bytes = new Uint8Array(binaryString.length);
         for (let i = 0; i < binaryString.length; i++) {
@@ -358,34 +268,13 @@ export const useLLM = () => {
     }
   };
 
-  // Check if model file exists in storage - FIXED IMPLEMENTATION
   const modelFileExists = useCallback(async () => {
-    if (platform === "web" && isStorageBucketsSupported()) {
+    if (platform === "web") {
       try {
-        const bucket = await getStorageBucket();
-
-        try {
-          // FIX: Use correct API to check if file exists
-          const fileStore = await bucket.access();
-          const keys = await fileStore.keys();
-
-          if (keys.includes(MODEL_CONFIG.filename)) {
-            // Get file metadata if available
-            const file = await fileStore.get(MODEL_CONFIG.filename);
-            if (file) {
-              const size = file.size || (await file.arrayBuffer()).byteLength;
-              setModelSize(size);
-              return size > 0;
-            }
-          }
-          return false;
-        } catch (e) {
-          // File doesn't exist or error checking
-          console.error("Error checking if file exists:", e);
-          return false;
-        }
+        const exists = await checkModelInIndexedDB(MODEL_CONFIG.filename);
+        return exists;
       } catch (e) {
-        console.error("Failed to check if model exists in storage bucket:", e);
+        console.error("Failed to check if model exists in IndexedDB:", e);
         return false;
       }
     } else if (platform !== "web") {
@@ -406,9 +295,8 @@ export const useLLM = () => {
       }
     }
     return false;
-  }, [platform, isStorageBucketsSupported, getStorageBucket]);
+  }, [platform]);
 
-  // Check model, download if needed, and initialize
   const checkModelExists = useCallback(async () => {
     setIsLoading(true);
     setIsCheckingModel(true);
@@ -430,8 +318,8 @@ export const useLLM = () => {
         } else {
           setStatusMessage("Model invalid. Redownloading...");
 
-          if (platform === "web" && isStorageBucketsSupported()) {
-            await deleteModelFromStorageBucket(MODEL_CONFIG.filename);
+          if (platform === "web") {
+            await deleteModelFromIndexedDB(MODEL_CONFIG.filename);
           } else if (platform !== "web") {
             await deleteModelFromCapacitor();
           }
@@ -469,10 +357,8 @@ export const useLLM = () => {
     downloadModel,
     loadModelFromStorage,
     modelFileExists,
-    isStorageBucketsSupported,
   ]);
 
-  // Load prompt template from JSON file
   const loadPromptTemplate = async () => {
     let promptTemplate = "{{USER_INPUT}}";
     let parameters = { ...DEFAULT_LLM_PARAMS };
@@ -493,7 +379,6 @@ export const useLLM = () => {
     return { promptTemplate, parameters };
   };
 
-  // Generate response from model with improved error handling
   const generateResponse = useCallback(
     async (userInput) => {
       if (!userInput || !userInput.trim()) {
@@ -523,17 +408,14 @@ export const useLLM = () => {
 
         const result = await new Promise((resolve, reject) => {
           try {
-            // Set up callback for streaming response
             llmInstance.current.callback = (text) => {
               setResponse((prev) => prev + text);
             };
 
-            // Set up completion callback
             llmInstance.current.onComplete = () => {
               resolve(llmInstance.current.output || response);
             };
 
-            // Run the model with the prompt and parameters
             llmInstance.current.run({ prompt, ...parameters });
           } catch (err) {
             console.error("LLM run failed:", err);
@@ -556,7 +438,6 @@ export const useLLM = () => {
     [isModelLoaded, response]
   );
 
-  // Redownload model (for troubleshooting)
   const redownloadModel = async () => {
     try {
       setIsLoading(true);
@@ -573,8 +454,8 @@ export const useLLM = () => {
         llmInstance.current = null;
       }
 
-      if (platform === "web" && isStorageBucketsSupported()) {
-        await deleteModelFromStorageBucket(MODEL_CONFIG.filename);
+      if (platform === "web") {
+        await deleteModelFromIndexedDB(MODEL_CONFIG.filename);
       } else if (platform !== "web") {
         await deleteModelFromCapacitor();
       }
@@ -597,7 +478,39 @@ export const useLLM = () => {
     }
   };
 
-  // Cleanup on unmount
+  const resetModel = async () => {
+    try {
+      setIsLoading(true);
+      setIsModelLoaded(false);
+      setStatusMessage("Resetting model...");
+      setError(null);
+
+      if (llmInstance.current) {
+        try {
+          llmInstance.current.dispose();
+        } catch (e) {
+          console.warn("Disposing LLM failed:", e);
+        }
+        llmInstance.current = null;
+      }
+
+      if (platform === "web") {
+        await deleteModelFromIndexedDB(MODEL_CONFIG.filename);
+      } else if (platform !== "web") {
+        await deleteModelFromCapacitor();
+      }
+
+      setIsModelStored(false);
+      setStatusMessage("Model reset completed");
+      await showToast("Model reset completed");
+    } catch (err) {
+      console.error("Reset model error:", err);
+      setError(`Reset model error: ${err.message}`);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   useEffect(() => {
     return () => {
       if (llmInstance.current) {
@@ -608,14 +521,12 @@ export const useLLM = () => {
         }
       }
 
-      // Cancel any ongoing downloads
       if (isDownloading) {
         abortController.current.abort();
       }
     };
   }, [isDownloading]);
 
-  // Return hook interface
   return {
     isModelLoaded,
     statusMessage,
@@ -632,24 +543,19 @@ export const useLLM = () => {
     cancelDownload,
     redownloadModel,
     checkModelExists,
+    resetModel,
   };
 };
 
-// Validate GGUF model format (enhanced checks)
 const isValidGGUF = async (modelData) => {
   try {
-    // Basic size check - GGUF models should be at least 100KB
     if (!modelData || modelData.byteLength < 100 * 1024) {
       console.warn("Model data is too small to be valid GGUF");
       return false;
     }
 
-    // Check for GGUF magic number at the beginning
-    // GGUF files start with bytes corresponding to 'GGUF' in ASCII
     const header = new Uint8Array(modelData, 0, 4);
-    const magicBytes = [0x47, 0x47, 0x55, 0x46]; // 'GGUF' in hex
-
-    // Compare header with magic bytes
+    const magicBytes = [0x47, 0x47, 0x55, 0x46];
     const hasValidMagic = header.every((byte, i) => byte === magicBytes[i]);
 
     if (!hasValidMagic) {
@@ -657,11 +563,9 @@ const isValidGGUF = async (modelData) => {
       return false;
     }
 
-    // Additional version check (optional)
-    const version = new DataView(modelData).getUint32(4, true); // Little endian
+    const version = new DataView(modelData).getUint32(4, true);
     console.log(`GGUF version: ${version}`);
 
-    // Versions above 100 are likely invalid
     if (version > 100) {
       console.warn("Model has suspicious GGUF version number");
       return false;
@@ -675,13 +579,11 @@ const isValidGGUF = async (modelData) => {
   }
 };
 
-// Save model to Capacitor filesystem with optimized base64 conversion
 const saveModelToCapacitor = async (buffer) => {
   try {
     if (!Filesystem) throw new Error("Filesystem not available");
 
-    // Convert ArrayBuffer to base64 in chunks to avoid memory issues
-    const chunkSize = 1024 * 1024; // 1MB chunks
+    const chunkSize = 1024 * 1024;
     const totalChunks = Math.ceil(buffer.byteLength / chunkSize);
     let base64Data = "";
 
@@ -712,94 +614,169 @@ const saveModelToCapacitor = async (buffer) => {
   }
 };
 
-// Save model to Storage Bucket (web) with optimized chunking - FIXED IMPLEMENTATION
-const saveModelToStorageBucket = async (filename, buffer) => {
-  // if (!isStorageBucketsSupported()) {
-  //   throw new Error("Storage Buckets API not available");
-  // }
-  typeof navigator !== "undefined" &&
-    navigator.storage &&
-    navigator.storage.buckets &&
-    typeof navigator.storage.buckets.open === "function";
-  try {
-    // FIX: Access the buckets API correctly through navigator.storage.buckets
-    const bucket = await navigator.storage.buckets.open(
-      MODEL_CONFIG.bucketName,
-      {
-        quota: 300 * 1024 * 1024, // 300MB
-        durability: "strict",
-        persisted: true,
-      }
-    );
+const saveModelToIndexedDB = async (filename, buffer) => {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open("AIModelDB", 1);
 
-    // First check if file exists and remove it if necessary
-    try {
-      // FIX: Use the correct access method to get to the file store
-      const fileStore = await bucket.access();
+    request.onerror = (event) => {
+      console.error("IndexedDB error:", event.target.error);
+      reject(new Error("IndexedDB error: " + event.target.error.message));
+    };
 
-      // Check if the file exists
-      const keys = await fileStore.keys();
-      if (keys.includes(filename)) {
-        await fileStore.delete(filename);
-        console.log(`Previous model file removed`);
-      }
-    } catch (e) {
-      console.warn("Error checking/removing existing file:", e);
-      // Continue with the save operation
-    }
+    request.onsuccess = (event) => {
+      const db = event.target.result;
+      const transaction = db.transaction("models", "readwrite");
+      const objectStore = transaction.objectStore("models");
 
-    // FIX: Use the correct method to create and write the file
-    const fileStore = await bucket.access();
+      const getRequest = objectStore.get(filename);
+      getRequest.onsuccess = () => {
+        if (getRequest.result) {
+          objectStore.delete(filename);
+          console.log(`Previous model file removed`);
+        }
 
-    // Since there's no direct streaming API in the spec, we'll create a Blob first
-    const blob = new Blob([buffer]);
+        const putRequest = objectStore.put({ filename, buffer });
+        putRequest.onsuccess = () => {
+          console.log(
+            `File ${filename} saved to IndexedDB (${buffer.byteLength} bytes)`
+          );
+          resolve();
+        };
 
-    // Store the file
-    await fileStore.put(filename, blob);
+        putRequest.onerror = (event) => {
+          console.error(
+            "Failed to save model to IndexedDB:",
+            event.target.error
+          );
+          reject(
+            new Error("Failed to save model: " + event.target.error.message)
+          );
+        };
+      };
 
-    console.log(
-      `File ${filename} saved to storage bucket (${buffer.byteLength} bytes)`
-    );
-  } catch (err) {
-    console.error("Failed to save model to storage bucket:", err);
-    throw new Error(`Failed to save model: ${err.message}`);
-  }
+      getRequest.onerror = (event) => {
+        console.error(
+          "Failed to check/remove existing file:",
+          event.target.error
+        );
+        reject(
+          new Error(
+            "Failed to check/remove existing file: " +
+              event.target.error.message
+          )
+        );
+      };
+    };
+
+    request.onupgradeneeded = (event) => {
+      const db = event.target.result;
+      db.createObjectStore("models", { keyPath: "filename" });
+    };
+  });
 };
 
-// Delete model from Storage Bucket (web) - FIXED IMPLEMENTATION
-const deleteModelFromStorageBucket = async (filename) => {
-  // if (!isStorageBucketsSupported()) {
-  //   throw new Error("Storage Buckets API not available");
-  // }
+const deleteModelFromIndexedDB = async (filename) => {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open("AIModelDB", 1);
 
-  typeof navigator !== "undefined" &&
-    navigator.storage &&
-    navigator.storage.buckets &&
-    typeof navigator.storage.buckets.open === "function";
+    request.onerror = (event) => {
+      console.error("IndexedDB error:", event.target.error);
+      reject(new Error("IndexedDB error: " + event.target.error.message));
+    };
 
-  try {
-    // FIX: Access the buckets API correctly
-    const bucket = await navigator.storage.buckets.open(
-      MODEL_CONFIG.bucketName,
-      {
-        quota: 300 * 1024 * 1024,
-        durability: "strict",
-        persisted: true,
-      }
-    );
+    request.onsuccess = (event) => {
+      const db = event.target.result;
+      const transaction = db.transaction("models", "readwrite");
+      const objectStore = transaction.objectStore("models");
 
-    // FIX: Access the file store and delete the file
-    const fileStore = await bucket.access();
-    await fileStore.delete(filename);
+      const deleteRequest = objectStore.delete(filename);
+      deleteRequest.onsuccess = () => {
+        console.log(`File ${filename} deleted from IndexedDB`);
+        resolve();
+      };
 
-    console.log(`File ${filename} deleted from storage bucket`);
-  } catch (err) {
-    console.error("Failed to delete model from storage bucket:", err);
-    throw new Error(`Failed to delete model: ${err.message}`);
-  }
+      deleteRequest.onerror = (event) => {
+        console.error(
+          "Failed to delete model from IndexedDB:",
+          event.target.error
+        );
+        reject(
+          new Error("Failed to delete model: " + event.target.error.message)
+        );
+      };
+    };
+  });
 };
 
-// Delete model from Capacitor filesystem
+const getModelFromIndexedDB = async (filename) => {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open("AIModelDB", 1);
+
+    request.onerror = (event) => {
+      console.error("IndexedDB error:", event.target.error);
+      reject(new Error("IndexedDB error: " + event.target.error.message));
+    };
+
+    request.onsuccess = (event) => {
+      const db = event.target.result;
+      const transaction = db.transaction("models", "readonly");
+      const objectStore = transaction.objectStore("models");
+
+      const getRequest = objectStore.get(filename);
+      getRequest.onsuccess = () => {
+        if (getRequest.result) {
+          const buffer = getRequest.result.buffer;
+          resolve(buffer);
+        } else {
+          reject(new Error(`File ${filename} not found in IndexedDB`));
+        }
+      };
+
+      getRequest.onerror = (event) => {
+        console.error(
+          "Failed to load model from IndexedDB:",
+          event.target.error
+        );
+        reject(
+          new Error("Failed to load model: " + event.target.error.message)
+        );
+      };
+    };
+  });
+};
+
+const checkModelInIndexedDB = async (filename) => {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open("AIModelDB", 1);
+
+    request.onerror = (event) => {
+      console.error("IndexedDB error:", event.target.error);
+      reject(new Error("IndexedDB error: " + event.target.error.message));
+    };
+
+    request.onsuccess = (event) => {
+      const db = event.target.result;
+      const transaction = db.transaction("models", "readonly");
+      const objectStore = transaction.objectStore("models");
+
+      const getRequest = objectStore.get(filename);
+      getRequest.onsuccess = () => {
+        resolve(!!getRequest.result);
+      };
+
+      getRequest.onerror = (event) => {
+        console.error(
+          "Failed to check model in IndexedDB:",
+          event.target.error
+        );
+        reject(
+          new Error("Failed to check model: " + event.target.error.message)
+        );
+      };
+    };
+  });
+};
+
 const deleteModelFromCapacitor = async () => {
   try {
     if (!Filesystem) throw new Error("Filesystem not available");
@@ -814,39 +791,4 @@ const deleteModelFromCapacitor = async () => {
     console.error("Failed to delete model from Capacitor:", err);
     throw new Error(`Failed to delete model: ${err.message}`);
   }
-};
-
-// Function to check available storage space
-export const checkAvailableStorage = async () => {
-  try {
-    if (navigator.storage && navigator.storage.estimate) {
-      const estimate = await navigator.storage.estimate();
-      const availableMB = Math.round(
-        (estimate.quota - estimate.usage) / (1024 * 1024)
-      );
-      return {
-        total: Math.round(estimate.quota / (1024 * 1024)),
-        used: Math.round(estimate.usage / (1024 * 1024)),
-        available: availableMB,
-      };
-    }
-    return null;
-  } catch (err) {
-    console.error("Failed to check storage:", err);
-    return null;
-  }
-};
-
-// Helper function to check if Storage Buckets API is available and properly implemented
-export const checkStorageBucketsSupport = () => {
-  if (typeof navigator === "undefined") return false;
-  if (!navigator.storage) return false;
-  if (!navigator.storage.buckets) return false;
-
-  // Check for at least the essential methods
-  const hasOpenMethod = typeof navigator.storage.buckets.open === "function";
-  const hasDeleteMethod =
-    typeof navigator.storage.buckets.delete === "function";
-
-  return hasOpenMethod && hasDeleteMethod;
 };
