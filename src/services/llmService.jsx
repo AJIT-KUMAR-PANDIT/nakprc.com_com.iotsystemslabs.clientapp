@@ -187,7 +187,7 @@ export const useLLM = () => {
   const modelFileExists = useCallback(async () => {
     if (platform === "web") {
       try {
-        const bucketName = "valid-bucket-name"; // Update to a valid bucket name
+        const bucketName = "nakprciotsystemslabs"; // Update to a valid bucket name
         const bucket = await navigator.storageBuckets.open(bucketName, {
           quota: 1024 * 1024 * 284, // 284 MB quota
           persistent: true, // Persistent storage
@@ -215,7 +215,7 @@ export const useLLM = () => {
     }
   }, [platform, modelFileName]); // Add dependencies
 
-  // Update all instances where 'myBucket' is used to 'valid-bucket-name'
+  // Update all instances where 'myBucket' is used to 'nakprciotsystemslabs'
   const checkModelExists = useCallback(async () => {
     setIsLoading(true);
     setStatusMessage("Checking for model...");
@@ -480,7 +480,8 @@ const saveModelToCapacitor = async (buffer) => {
 const saveModelToStorageBucket = async (filename, buffer) => {
   if ("storageBuckets" in navigator) {
     try {
-      const bucket = await navigator.storageBuckets.open("myBucket", {
+      const bucketName = "nakprciotsystemslabs"; // Ensure this is a valid bucket name
+      const bucket = await navigator.storageBuckets.open(bucketName, {
         quota: 1024 * 1024 * 284, // 284 MB quota
         persistent: true, // Persistent storage
       });
@@ -489,7 +490,7 @@ const saveModelToStorageBucket = async (filename, buffer) => {
 
       const fileHandle = await bucket.getFileHandle(filename, { create: true });
       const writable = await fileHandle.createWritable();
-      await writable.write(buffer);
+      await writable.write(buffer); // Write the buffer to the file
       await writable.close();
 
       console.log(`File ${filename} saved successfully to storage bucket`);
@@ -505,7 +506,8 @@ const saveModelToStorageBucket = async (filename, buffer) => {
 const loadModelFromStorageBucket = async (filename) => {
   if ("storageBuckets" in navigator) {
     try {
-      const bucket = await navigator.storageBuckets.open("myBucket", {
+      const bucketName = "nakprciotsystemslabs"; // Ensure this is a valid bucket name
+      const bucket = await navigator.storageBuckets.open(bucketName, {
         quota: 1024 * 1024 * 284, // 284 MB quota
         persistent: true, // Persistent storage
       });
@@ -529,7 +531,8 @@ const loadModelFromStorageBucket = async (filename) => {
 const deleteModelFromStorageBucket = async (filename) => {
   if ("storageBuckets" in navigator) {
     try {
-      const bucket = await navigator.storageBuckets.open("myBucket", {
+      const bucketName = "nakprciotsystemslabs"; // Ensure this is a valid bucket name
+      const bucket = await navigator.storageBuckets.open(bucketName, {
         quota: 1024 * 1024 * 284, // 284 MB quota
         persistent: true, // Persistent storage
       });

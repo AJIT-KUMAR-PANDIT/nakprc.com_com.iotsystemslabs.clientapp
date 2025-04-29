@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import "../styles/ai-overlay.css";
-import { useLLM } from "../services/llmService";
+import { useLLM } from "../services/llmService"; // Import useLLM hook
 import { useTTS } from "../services/ttsService";
 import { useSpeechRecognition } from "../services/speechRecognitionService";
 
@@ -29,7 +29,7 @@ const AIOverlay = ({ isOpen, onClose, onListen, isListening }) => {
     isCheckingModel,
     redownloadModel,
     error,
-  } = useLLM();
+  } = useLLM(); // Use useLLM hook
   
   const {
     startListening: startSpeechRecognition,
@@ -253,7 +253,7 @@ const AIOverlay = ({ isOpen, onClose, onListen, isListening }) => {
                 <p>AI model required for voice assistant</p>
                 <button
                   className="model-download-button"
-                  onClick={downloadModel}
+                  onClick={downloadModel} // Trigger download and storage
                   disabled={isLoading}
                 >
                   Download Now
