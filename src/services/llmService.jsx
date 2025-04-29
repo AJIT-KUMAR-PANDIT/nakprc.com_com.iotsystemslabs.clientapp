@@ -195,7 +195,6 @@ export const useLLM = () => {
   const downloadModel = async () => {
     if (isDownloading || isModelStored) return;
 
-    // Reset abort controller
     abortController.current = new AbortController();
     setIsDownloading(true);
     setStatusMessage("Downloading model...");
@@ -223,11 +222,7 @@ export const useLLM = () => {
 
       while (true) {
         const { done, value } = await reader.read();
-
-        if (done) {
-          break;
-        }
-
+        if (done) break;
         chunks.push(value);
         loadedBytes += value.length;
 
@@ -248,12 +243,28 @@ export const useLLM = () => {
       const buffer = concatenated.buffer;
 
       // Store model in appropriate storage
-      if (platform === "web" && isStorageBucketsSupported()) {
+      if (
+        platform === "web" &&
+        typeof navigator !== "undefined" &&
+        navigator.storage &&
+        navigator.storage.buckets &&
+        typeof navigator.storage.buckets.open === "function"
+      ) {
         await saveModelToStorageBucket(MODEL_CONFIG.filename, buffer);
-      } else if (platform !== "web") {
+      } else if (platform !== "web" && Filesystem) {
         await saveModelToCapacitor(buffer);
       } else {
-        throw new Error("No storage mechanism available");
+        setStatusMessage(
+          "Your browser does not support persistent storage for AI models. Please use a supported browser or platform."
+        );
+        setError(
+          "No supported storage mechanism found (Storage Buckets API or Capacitor)."
+        );
+        await showToast(
+          "No supported storage mechanism found. Try Chrome Canary with Storage Buckets enabled.",
+          "long"
+        );
+        return null;
       }
 
       setIsModelStored(true);
@@ -262,7 +273,6 @@ export const useLLM = () => {
 
       return buffer;
     } catch (err) {
-      // Check if this was an abort
       if (err.name === "AbortError") {
         console.log("Download aborted");
         setStatusMessage("Download aborted");
