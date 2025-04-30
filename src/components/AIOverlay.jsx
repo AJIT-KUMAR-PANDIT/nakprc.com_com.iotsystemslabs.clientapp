@@ -2,43 +2,29 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import { useLLM } from "../services/llmService";
 import { useTTS } from "../services/ttsService";
 import { useSpeechRecognition } from "../services/speechRecognitionService";
-import {
-  MessageCircle,
-  Mic,
-  MicOff,
-  Volume2,
-  VolumeX,
-  RefreshCw,
-  X,
-  Loader,
-  MessageSquare,
-  Zap,
-  Database,
-  Brain,
-  DownloadCloud,
-} from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
+import { Mic, Send, Loader, DownloadCloud, X } from "lucide-react";
+
+// Hi-tech animated glowing border
+const GlowingBorder = ({ children }) => (
+  <div className="relative rounded-2xl overflow-hidden shadow-2xl">
+    <div className="absolute inset-0 z-0 animate-glow bg-gradient-to-br from-blue-700 via-purple-600 to-pink-500 opacity-60 blur-lg" />
+    <div className="relative z-10">{children}</div>
+  </div>
+);
 
 const AIOverlay = ({ isOpen, onClose }) => {
-  // Component state
-  const [activeMode, setActiveMode] = useState("voice"); // "voice" or "text"
-  const [animationComplete, setAnimationComplete] = useState(false);
-  const [audioVisualizer, setAudioVisualizer] = useState([]);
-  const [transcript, setTranscript] = useState("");
-  const [response, setResponse] = useState("");
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [messages, setMessages] = useState([]);
+  // State
+  const [activeMode, setActiveMode] = useState("text"); // "text" or "voice"
   const [inputText, setInputText] = useState("");
+  const [messages, setMessages] = useState([]);
+  const [isProcessing, setIsProcessing] = useState(false);
   const [isListening, setIsListening] = useState(false);
-
-  // Refs
+  const [transcript, setTranscript] = useState("");
+  const [waveform, setWaveform] = useState([]);
   const messagesEndRef = useRef(null);
-  const inputRef = useRef(null);
-  const listeningRef = useRef(isListening);
-  const debounceTimer = useRef(null);
 
-  // Services
-  const { speak, isSpeaking, stop: stopSpeaking } = useTTS();
-
+  // LLM & TTS
   const {
     generateResponse,
     isModelLoaded,
@@ -51,646 +37,423 @@ const AIOverlay = ({ isOpen, onClose }) => {
     error,
     cancelDownload,
     stopGeneration,
-    checkModelExists,
     modelSize,
     platform,
   } = useLLM();
+  const { speak, isSpeaking, stop: stopSpeaking } = useTTS();
 
+  // Speech Recognition
   const {
     startListening: startSpeechRecognition,
     stopListening: stopSpeechRecognition,
     transcript: recognizedText,
   } = useSpeechRecognition();
 
-  // Add state for UI enhancements
-  const [chatHistory, setChatHistory] = useState(() => {
-    // Try to load chat history from localStorage
-    try {
-      const saved = localStorage.getItem("luna_chat_history");
-      return saved ? JSON.parse(saved) : [];
-    } catch (e) {
-      console.error("Failed to load chat history:", e);
-      return [];
-    }
-  });
-
-  // Handle animation completion
-  useEffect(() => {
-    if (isOpen) {
-      setAnimationComplete(false);
-      const timer = setTimeout(() => {
-        setAnimationComplete(true);
-      }, 1000);
-      return () => clearTimeout(timer);
-    }
-  }, [isOpen]);
-
-  // Handle speech recognition
-  useEffect(() => {
-    listeningRef.current = isListening;
-  }, [isListening]);
-
-  // Initialize voice listening if in voice mode
-  useEffect(() => {
-    if (isListening && activeMode === "voice") {
-      startSpeechRecognition();
-
-      const interval = setInterval(() => {
-        const bars = Array.from({ length: 20 }, () =>
-          Math.floor(Math.random() * 100)
-        );
-        setAudioVisualizer(bars);
-      }, 100);
-
-      return () => {
-        clearInterval(interval);
-        stopSpeechRecognition();
-      };
-    } else {
-      setAudioVisualizer([]);
-    }
-  }, [isListening, activeMode, startSpeechRecognition, stopSpeechRecognition]);
-
-  // Process speech recognition results
-  useEffect(() => {
-    if (recognizedText && activeMode === "voice") {
-      console.log("Speech recognition text:", recognizedText);
-
-      if (recognizedText.toLowerCase().includes("luna")) {
-        if (!isListening) {
-          toggleListening();
-        }
-      }
-
-      // Debounce: Only process after user stops speaking for 1 second
-      if (
-        isListening &&
-        recognizedText &&
-        !recognizedText.toLowerCase().includes("luna")
-      ) {
-        if (debounceTimer.current) {
-          clearTimeout(debounceTimer.current);
-        }
-        debounceTimer.current = setTimeout(() => {
-          const fullText = recognizedText.trim();
-          console.log("Processing full command:", fullText);
-          setTranscript(fullText);
-          processCommand(fullText);
-        }, 1000); // 1 second pause
-      }
-    }
-
-    return () => {
-      if (debounceTimer.current) {
-        clearTimeout(debounceTimer.current);
-      }
-    };
-  }, [recognizedText, isListening]);
-
-  // Auto-scroll chat messages
+  // Scroll to bottom on new message
   useEffect(() => {
     if (messagesEndRef.current) {
       messagesEndRef.current.scrollIntoView({ behavior: "smooth" });
     }
   }, [messages]);
 
-  // Focus input when switching to text mode
+  // Voice waveform animation
   useEffect(() => {
-    if (activeMode === "text" && inputRef.current) {
-      inputRef.current.focus();
+    let interval;
+    if (isListening) {
+      interval = setInterval(() => {
+        setWaveform(Array.from({ length: 24 }, () => Math.random()));
+      }, 80);
+    } else {
+      setWaveform([]);
     }
-  }, [activeMode]);
+    return () => clearInterval(interval);
+  }, [isListening]);
 
-  // Process voice or text command
+  // Handle speech recognition results
+  useEffect(() => {
+    if (recognizedText && isListening && activeMode === "voice") {
+      setTranscript(recognizedText);
+    }
+  }, [recognizedText, isListening, activeMode]);
+
+  // Handle sending message (text or voice)
   const processCommand = useCallback(
     async (text) => {
-      if (isProcessing || !text || !text.trim()) return;
+      if (!text.trim() || isProcessing) return;
+      setIsProcessing(true);
 
-      try {
-        setIsProcessing(true);
-        setTranscript(text);
+      // Add user message
+      setMessages((prev) => [
+        ...prev,
+        { type: "user", content: text, timestamp: new Date() },
+      ]);
 
-        // Add user message to chat
-        const userMessage = {
-          type: "user",
-          content: text,
-          timestamp: new Date(),
-        };
-        setMessages((prev) => [...prev, userMessage]);
-
-        if (activeMode === "voice") {
-          // Wait a moment before sending to LLM when in voice mode
-          await new Promise((resolve) => setTimeout(resolve, 1000));
-        }
-
-        // Generate response from LLM
-        const llmResponse = await generateResponse(text);
-
-        // Ensure llmResponse is a valid string
-        if (typeof llmResponse !== "string") {
-          throw new Error("Invalid response from LLM");
-        }
-
-        // Extract system and user parts if they exist
-        let systemUrl = null;
-        let userResponse = llmResponse;
-
-        const systemMatch = llmResponse.match(/^system:\s*(.+)$/m);
-        if (systemMatch) {
-          systemUrl = systemMatch[1].trim();
-        }
-
-        const userMatch = llmResponse.match(/^user:\s*(.+)$/m);
-        if (userMatch) {
-          userResponse = userMatch[1].trim();
-        }
-
-        // If system URL exists, try to call it
-        if (systemUrl) {
-          try {
-            await fetch(systemUrl);
-          } catch (err) {
-            console.error("Device control API error:", err);
-          }
-        }
-
-        // Set response and add to chat
-        setResponse(userResponse);
-        const aiMessage = {
+      // Add AI thinking animation
+      setMessages((prev) => [
+        ...prev,
+        {
           type: "ai",
-          content: userResponse,
+          content: "Thinking...",
+          isThinking: true,
           timestamp: new Date(),
-        };
-        setMessages((prev) => [...prev, aiMessage]);
+        },
+      ]);
 
-        // Speak response if in voice mode
-        if (activeMode === "voice") {
-          await speak(userResponse);
-        }
-      } catch (error) {
-        console.error("LLM error:", error);
-        const errorResponse = "Sorry, I had trouble processing your request";
-        setResponse(errorResponse);
-
-        const errorMessage = {
-          type: "ai",
-          content: errorResponse,
-          timestamp: new Date(),
-          isError: true,
-        };
-        setMessages((prev) => [...prev, errorMessage]);
-
-        if (activeMode === "voice") {
-          await speak(errorResponse);
-        }
-      } finally {
-        setIsProcessing(false);
-        if (activeMode === "voice") {
-          // Reset transcript after processing is complete
-          setTranscript("");
-        }
-      }
-    },
-    [isProcessing, activeMode, generateResponse, speak]
-  );
-
-  // Toggle listening mode
-  const toggleListening = useCallback(() => {
-    if (isListening) {
-      stopSpeechRecognition();
-      setIsListening(false);
-    } else {
-      setIsListening(true);
-    }
-  }, [isListening, stopSpeechRecognition]);
-
-  // Handle text input submission
-  const handleSubmit = useCallback(
-    (e) => {
-      e.preventDefault();
-      if (inputText.trim()) {
-        processCommand(inputText);
-        setInputText("");
-      }
-    },
-    [inputText, processCommand]
-  );
-
-  // Toggle between voice and text modes
-  const toggleMode = useCallback(() => {
-    if (activeMode === "voice") {
-      if (isListening) {
-        stopSpeechRecognition();
-        setIsListening(false);
-      }
-      setActiveMode("text");
-    } else {
-      setActiveMode("voice");
-    }
-  }, [activeMode, isListening, stopSpeechRecognition]);
-
-  // Format timestamp for messages
-  const formatTimestamp = (timestamp) => {
-    return new Intl.DateTimeFormat("en-US", {
-      hour: "numeric",
-      minute: "numeric",
-      hour12: true,
-    }).format(timestamp);
-  };
-
-  // Handle close with cleanup
-  const handleClose = useCallback(() => {
-    if (isSpeaking) {
-      stopSpeaking();
-    }
-    if (isListening) {
-      stopSpeechRecognition();
-    }
-    setIsListening(false);
-    setTranscript("");
-    setResponse("");
-    onClose();
-  }, [isSpeaking, isListening, stopSpeaking, stopSpeechRecognition, onClose]);
-
-  // Handle stopping ongoing operations
-  const handleStop = useCallback(() => {
-    if (isSpeaking) {
-      stopSpeaking();
-    }
-    if (isProcessing) {
-      stopGeneration();
-      setIsProcessing(false);
-    }
-  }, [isSpeaking, isProcessing, stopSpeaking, stopGeneration]);
-
-  // Persist messages to localStorage
-  useEffect(() => {
-    if (messages.length > 0) {
+      let llmResponse = "";
       try {
-        localStorage.setItem("luna_chat_history", JSON.stringify(messages));
+        llmResponse = await generateResponse(text);
       } catch (e) {
-        console.error("Failed to save chat history:", e);
-      }
-    }
-  }, [messages]);
-
-  // Enhanced model check with better error handling
-  useEffect(() => {
-    if (isOpen && !isModelLoaded && !isCheckingModel) {
-      console.log("Checking model existence...");
-      checkModelExists().catch((err) => {
-        console.error("Model check failed:", err);
-      });
-    }
-  }, [isOpen, isModelLoaded, isCheckingModel, checkModelExists]);
-
-  // Add a more aggressive sync mechanism
-  useEffect(() => {
-    // Check console output for model loaded message
-    const checkModelStatus = () => {
-      console.log("Current model status:", {
-        isModelLoaded,
-        statusMessage,
-        isCheckingModel,
-      });
-
-      if (!isModelLoaded) {
-        checkModelExists();
-      }
-    };
-
-    if (isOpen) {
-      // Initial check
-      checkModelStatus();
-
-      // Set up periodic checks
-      const intervalId = setInterval(checkModelStatus, 3000);
-      return () => clearInterval(intervalId);
-    }
-  }, [isOpen, isModelLoaded, checkModelExists]);
-
-  // Add local state for force model loaded
-  const [forceModelLoaded, setForceModelLoaded] = useState(false);
-
-  // Define effectiveModelLoaded
-  const effectiveModelLoaded = isModelLoaded || forceModelLoaded;
-
-  // Replace the nested useEffect with a proper one
-  useEffect(() => {
-    if (isOpen && !isModelLoaded && !forceModelLoaded) {
-      // If we see "Initializing model..." in the status message, it means
-      // the model is actually loaded but the state hasn't been updated
-      if (statusMessage.includes("Initializing model")) {
-        console.log("Model appears to be initializing, forcing loaded state");
-        setForceModelLoaded(true);
+        llmResponse = "";
       }
 
-      // Check for specific console patterns that indicate model is loaded
-      const checkForModelLoaded = () => {
-        if (statusMessage.includes("Initializing model")) {
-          console.log("Forcing model loaded state based on status message");
-          setForceModelLoaded(true);
-        }
-      };
+      // Remove thinking message
+      setMessages((prev) => prev.filter((msg) => !msg.isThinking));
 
-      // Run the check immediately and then periodically
-      checkForModelLoaded();
-      const intervalId = setInterval(checkForModelLoaded, 1000);
+      // Parse beraer_system and beraer_user if present
+      let userResponse = llmResponse;
+      let systemResponse = null;
+      if (llmResponse && llmResponse.includes("beraer_system:")) {
+        const sysMatch = llmResponse.match(/beraer_system:"([^"]+)"/);
+        const userMatch = llmResponse.match(/beraer_user:"([^"]+)"/);
+        if (sysMatch) systemResponse = sysMatch[1];
+        if (userMatch) userResponse = userMatch[1];
+      }
 
-      return () => clearInterval(intervalId);
+      // Add AI message
+      setMessages((prev) => [
+        ...prev,
+        {
+          type: "ai",
+          content: userResponse || "Sorry, I didn't get that.",
+          timestamp: new Date(),
+        },
+      ]);
+
+      // Speak if in voice mode
+      if (activeMode === "voice" && userResponse) {
+        await speak(userResponse);
+      }
+
+      setIsProcessing(false);
+
+      // Optionally: handle systemResponse internally (e.g., send to backend)
+      if (systemResponse) {
+        // TODO: handle system command, e.g., send fetch to systemResponse URL
+        // fetch(systemResponse);
+      }
+    },
+    [generateResponse, activeMode, speak, isProcessing]
+  );
+
+  // Handle text input submit
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    if (inputText.trim()) {
+      processCommand(inputText);
+      setInputText("");
     }
-  }, [isOpen, isModelLoaded, forceModelLoaded, statusMessage]);
+  };
 
-  // Render download status
-  const renderDownloadStatus = () => {
-    return (
-      <div className="flex flex-col items-center justify-center h-full p-6 text-center bg-gradient-to-b from-gray-900 to-gray-800 text-white">
-        <div className="mb-6">
-          <Brain size={48} className="text-blue-400 mb-2" />
-          <h2 className="text-2xl font-bold mb-2">Luna AI Model</h2>
-          <p className="text-gray-300">{statusMessage}</p>
+  // Voice controls
+  const handleVoiceStart = () => {
+    setIsListening(true);
+    startSpeechRecognition();
+  };
+  const handleVoiceStop = () => {
+    setIsListening(false);
+    stopSpeechRecognition();
+    if (transcript.trim()) {
+      processCommand(transcript);
+      setTranscript("");
+    }
+  };
 
-          {/* Add debug info */}
-          <div className="mt-2 text-xs text-gray-400">
-            <p>Model loaded: {isModelLoaded ? "Yes" : "No"}</p>
-            <p>Force loaded: {forceModelLoaded ? "Yes" : "No"}</p>
-            <p>Checking model: {isCheckingModel ? "Yes" : "No"}</p>
-            <p>Platform: {platform}</p>
+  // Model status UI
+  const renderModelStatus = () => {
+    if (isDownloading) {
+      return (
+        <div className="flex flex-col items-center mb-4 p-3 bg-blue-900 bg-opacity-60 rounded-lg animate-pulse">
+          <DownloadCloud
+            className="animate-bounce mb-2 text-blue-300"
+            size={32}
+          />
+          <div className="text-sm font-medium mb-2 text-blue-200">
+            Downloading model: {Math.round(downloadProgress)}%
           </div>
+          <div className="w-full bg-gray-700 rounded-full h-2.5">
+            <div
+              className="bg-gradient-to-r from-blue-400 to-purple-500 h-2.5 rounded-full"
+              style={{ width: `${downloadProgress}%` }}
+            ></div>
+          </div>
+          <button
+            onClick={cancelDownload}
+            className="mt-2 px-3 py-1 bg-red-600 text-white text-xs rounded hover:bg-red-700"
+          >
+            Cancel
+          </button>
         </div>
-
-        {/* Add a manual override button */}
-        {statusMessage.includes("Initializing model") && !forceModelLoaded && (
-          <div className="mt-4">
-            <button
-              onClick={() => setForceModelLoaded(true)}
-              className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors shadow-lg flex items-center justify-center mx-auto"
-            >
-              <RefreshCw size={16} className="mr-2" /> Force Start Assistant
-            </button>
+      );
+    }
+    if (isCheckingModel) {
+      return (
+        <div className="flex items-center justify-center mb-4 p-3 bg-blue-900 bg-opacity-60 rounded-lg">
+          <Loader className="animate-spin mr-2 text-blue-200" size={20} />
+          <span className="text-sm text-blue-100">
+            Checking model status...
+          </span>
+        </div>
+      );
+    }
+    if (!isModelLoaded) {
+      return (
+        <div className="flex flex-col items-center mb-4 p-3 bg-yellow-900 bg-opacity-60 rounded-lg">
+          <div className="text-sm mb-2 text-yellow-200">
+            AI model not loaded
           </div>
-        )}
-
-        {/* Rest of download status UI */}
-        {isDownloading && (
-          <div className="w-full max-w-md">
-            {/* ... existing download UI ... */}
-          </div>
-        )}
-
-        {!isDownloading && !isModelLoaded && !isCheckingModel && (
-          <div className="mt-4">
-            <button
-              onClick={downloadModel}
-              className="px-6 py-3 bg-gradient-to-r from-blue-600 to-blue-500 text-white rounded-md hover:from-blue-700 hover:to-blue-600 transition-all shadow-lg flex items-center justify-center"
-            >
-              <DownloadCloud size={18} className="mr-2" /> Download AI Model
-            </button>
-          </div>
-        )}
-
-        {error && (
-          <div className="mt-6 p-4 bg-red-900 bg-opacity-50 rounded-md">
-            <p className="text-red-300">{error}</p>
-            <button
-              onClick={() => {
-                setError(null);
-                checkModelExists();
-              }}
-              className="mt-2 px-4 py-2 bg-red-700 text-white rounded hover:bg-red-800 transition-colors"
-            >
-              <RefreshCw size={16} className="mr-2 inline" /> Try Again
-            </button>
-          </div>
-        )}
-      </div>
-    );
-  };
-
-  // Render messages
-  const renderMessages = () => {
+          <button
+            onClick={downloadModel}
+            className="px-4 py-2 bg-blue-700 text-white rounded hover:bg-blue-800"
+            disabled={isDownloading || isCheckingModel}
+          >
+            Download Model
+          </button>
+          {error && <div className="text-xs text-red-300 mt-2">{error}</div>}
+        </div>
+      );
+    }
     return (
-      <div className="flex-1 overflow-y-auto p-4 bg-gradient-to-b from-gray-50 to-white">
-        {messages.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full text-gray-500">
-            <Brain size={40} className="text-blue-400 mb-3" />
-            <p className="text-lg font-medium">
-              Start a conversation with Luna
-            </p>
-            <p className="text-sm mt-2 text-gray-400">
-              Ask me anything or try voice commands
-            </p>
-          </div>
-        ) : (
-          <div className="space-y-4">
-            {messages.map((message, index) => (
-              <div
-                key={index}
-                className={`flex ${
-                  message.type === "user" ? "justify-end" : "justify-start"
-                }`}
-              >
-                <div
-                  className={`max-w-[75%] p-3 rounded-lg shadow-sm ${
-                    message.type === "user"
-                      ? "bg-gradient-to-r from-blue-500 to-blue-600 text-white"
-                      : message.isError
-                      ? "bg-red-100 text-red-800 border border-red-200"
-                      : message.isThinking
-                      ? "bg-gray-100 text-gray-500 animate-pulse"
-                      : "bg-white border border-gray-200 text-gray-800"
-                  }`}
-                >
-                  {message.isThinking ? (
-                    <div className="flex items-center">
-                      <div className="mr-2">
-                        <Loader size={14} className="animate-spin" />
-                      </div>
-                      <p>{message.content}</p>
-                    </div>
-                  ) : (
-                    <p>{message.content}</p>
-                  )}
-                  <p className="text-xs mt-1 opacity-75">
-                    {formatTimestamp(message.timestamp)}
-                  </p>
-                </div>
-              </div>
-            ))}
-            <div ref={messagesEndRef} />
-          </div>
-        )}
+      <div className="flex items-center mb-4 p-2 bg-green-900 bg-opacity-60 rounded-lg text-xs text-green-200">
+        <span className="inline-block w-2 h-2 rounded-full bg-green-400 mr-2"></span>
+        <span>
+          Model loaded ({platform}) - {(modelSize / (1024 * 1024)).toFixed(1)}{" "}
+          MB
+        </span>
       </div>
     );
   };
 
-  // Render loader
-  const renderLoader = () => {
-    return <Loader size={18} className="animate-spin" />;
-  };
-
-  // Main render
-  if (!isOpen) return null;
-
+  // Main UI
   return (
-    <div
-      className={`fixed inset-0 bg-black bg-opacity-70 backdrop-blur-sm flex items-center justify-center z-50 transition-opacity duration-300 ${
-        animationComplete ? "opacity-100" : "opacity-0"
-      }`}
-    >
-      <div
-        className={`bg-white rounded-xl shadow-2xl flex flex-col w-full max-w-lg h-full max-h-[80vh] transition-transform duration-500 ${
-          animationComplete ? "scale-100" : "scale-95"
-        }`}
-      >
-        {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b bg-gradient-to-r from-blue-600 to-blue-500 text-white rounded-t-xl">
-          <h2 className="text-xl font-bold flex items-center">
-            <Zap className="mr-2" /> Luna AI Assistant
-          </h2>
-          <div className="flex items-center">
-            {effectiveModelLoaded && (
-              <div className="flex items-center mr-3 bg-blue-700 bg-opacity-30 px-2 py-1 rounded-full text-xs">
-                <Database size={12} className="mr-1" />
-                <span>{(modelSize / (1024 * 1024)).toFixed(1)} MB</span>
-              </div>
-            )}
-            <button
-              onClick={handleClose}
-              className="p-1 rounded-full hover:bg-blue-700 transition-colors"
+    <AnimatePresence>
+      {isOpen && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          className="fixed inset-0 z-[9999] flex items-end justify-center bg-gradient-to-br from-black/80 to-blue-950/90"
+        >
+          <GlowingBorder>
+            <motion.div
+              initial={{ y: 100 }}
+              animate={{ y: 0 }}
+              exit={{ y: 100 }}
+              transition={{ type: "spring", stiffness: 120, damping: 18 }}
+              className="w-[95vw] max-w-2xl mx-auto bg-gradient-to-br from-blue-950 via-black to-purple-900 rounded-2xl shadow-2xl border border-blue-700/40 overflow-hidden"
+              style={{ maxHeight: "90vh" }}
             >
-              <X size={20} />
-            </button>
-          </div>
-        </div>
+              {/* Header */}
+              <div className="flex justify-between items-center p-4 border-b border-blue-800/40 bg-gradient-to-r from-blue-900/80 to-purple-900/60">
+                <h2 className="text-lg font-bold text-blue-200 tracking-wider flex items-center">
+                  <span className="animate-pulse mr-2">
+                    <BrainGlow />
+                  </span>
+                  Luna AI Assistant
+                </h2>
+                <button
+                  onClick={onClose}
+                  className="p-2 rounded-full hover:bg-blue-800/40 transition"
+                >
+                  <X className="text-blue-200" size={24} />
+                </button>
+              </div>
 
-        {/* Main Content */}
-        <div className="flex-1 flex flex-col overflow-hidden">
-          {!effectiveModelLoaded &&
-          !statusMessage.includes("Initializing model") ? (
-            renderDownloadStatus()
-          ) : (
-            <>
-              {/* Messages Area */}
-              {renderMessages()}
+              {/* Model Status */}
+              {renderModelStatus()}
 
-              {/* Input Area */}
-              <div className="border-t p-4 bg-gray-50">
-                {activeMode === "voice" ? (
-                  <div className="flex flex-col">
-                    {isListening && (
-                      <div className="flex items-end justify-center h-16 gap-[2px] mb-4">
-                        {audioVisualizer.map((height, index) => (
-                          <div
-                            key={index}
-                            className="w-1 bg-gradient-to-t from-blue-600 to-blue-400 rounded-t transition-all duration-150"
-                            style={{ height: `${height}%` }}
-                          ></div>
-                        ))}
-                      </div>
-                    )}
-
-                    <div className="flex items-center">
-                      <button
-                        onClick={toggleListening}
-                        disabled={isProcessing}
-                        className={`p-4 rounded-full mr-3 shadow-lg ${
-                          isListening
-                            ? "bg-gradient-to-r from-red-500 to-red-600 text-white"
-                            : "bg-gradient-to-r from-blue-500 to-blue-600 text-white"
-                        } ${
-                          isProcessing ? "opacity-50 cursor-not-allowed" : ""
-                        } transform transition-transform hover:scale-105 active:scale-95`}
-                      >
-                        {isListening ? <MicOff size={22} /> : <Mic size={22} />}
-                      </button>
-
-                      <div className="flex-1 p-3 bg-white rounded-lg border border-gray-200 shadow-sm">
-                        {transcript ? (
-                          <p className="text-gray-700">{transcript}</p>
-                        ) : (
-                          <p className="text-gray-500">
-                            {isListening
-                              ? "Listening..."
-                              : "Press the mic button to speak"}
-                          </p>
-                        )}
-                      </div>
-
-                      <div className="flex ml-2">
-                        {isProcessing && (
-                          <button
-                            onClick={handleStop}
-                            className="p-2 text-red-500 hover:bg-red-100 rounded-full transition-colors mr-2 shadow-sm"
-                          >
-                            <X size={20} />
-                          </button>
-                        )}
-                        <button
-                          onClick={toggleMode}
-                          className="p-2 text-gray-500 hover:bg-gray-100 rounded-full transition-colors shadow-sm"
-                        >
-                          <MessageSquare size={20} />
-                        </button>
-                      </div>
-                    </div>
-
-                    {isSpeaking && (
-                      <div className="flex items-center justify-between mt-3 p-3 bg-blue-50 rounded-lg border border-blue-100 shadow-sm">
-                        <div className="flex items-center">
-                          <Volume2
-                            size={16}
-                            className="text-blue-500 mr-2 animate-pulse"
-                          />
-                          <p className="text-sm text-blue-800">Speaking...</p>
-                        </div>
-                        <button
-                          onClick={stopSpeaking}
-                          className="text-blue-800 hover:bg-blue-100 p-1 rounded-full"
-                        >
-                          <VolumeX size={16} />
-                        </button>
-                      </div>
-                    )}
+              {/* Chat Messages */}
+              <div
+                className="p-4 overflow-y-auto"
+                style={{ maxHeight: "48vh" }}
+              >
+                {messages.length === 0 ? (
+                  <div className="text-center text-blue-300 py-8 animate-pulse">
+                    <p>Ask me anything or control your smart home!</p>
                   </div>
                 ) : (
-                  <form onSubmit={handleSubmit} className="flex items-center">
-                    <input
-                      ref={inputRef}
-                      type="text"
-                      value={inputText}
-                      onChange={(e) => setInputText(e.target.value)}
-                      placeholder="Type your message..."
-                      className="flex-1 p-3 border rounded-l-lg focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm"
-                      disabled={isProcessing}
-                    />
-                    <button
-                      type="submit"
-                      disabled={isProcessing || !inputText.trim()}
-                      className={`p-3 bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-r-lg hover:from-blue-600 hover:to-blue-700 transition-all shadow-sm ${
-                        isProcessing || !inputText.trim()
-                          ? "opacity-50 cursor-not-allowed"
-                          : ""
+                  messages.map((message, idx) => (
+                    <div
+                      key={idx}
+                      className={`mb-4 flex ${
+                        message.type === "user"
+                          ? "justify-end"
+                          : "justify-start"
                       }`}
                     >
-                      {isProcessing ? renderLoader() : "Send"}
+                      <motion.div
+                        initial={{ scale: 0.95, opacity: 0 }}
+                        animate={{ scale: 1, opacity: 1 }}
+                        transition={{ delay: idx * 0.03 }}
+                        className={`px-4 py-2 rounded-2xl max-w-[80%] shadow-lg ${
+                          message.type === "user"
+                            ? "bg-gradient-to-r from-blue-700 to-blue-500 text-white"
+                            : message.type === "system"
+                            ? "bg-gradient-to-r from-yellow-700 to-yellow-500 text-white"
+                            : "bg-gradient-to-r from-purple-800 to-blue-900 text-blue-100"
+                        } ${message.isThinking ? "animate-pulse" : ""}`}
+                      >
+                        {message.content}
+                        <div className="text-xs text-blue-300 mt-1 text-right">
+                          {message.timestamp &&
+                            new Date(message.timestamp).toLocaleTimeString()}
+                        </div>
+                      </motion.div>
+                    </div>
+                  ))
+                )}
+                <div ref={messagesEndRef} />
+              </div>
+
+              {/* Input Area */}
+              <div className="p-4 border-t border-blue-800/40 bg-gradient-to-r from-blue-900/80 to-purple-900/60">
+                <form
+                  onSubmit={handleSubmit}
+                  className="flex items-center gap-2"
+                >
+                  {/* Mode Toggle */}
+                  <div className="flex items-center mr-2">
+                    <button
+                      type="button"
+                      onClick={() => setActiveMode("text")}
+                      className={`p-2 rounded-l-lg transition ${
+                        activeMode === "text"
+                          ? "bg-blue-700 text-white shadow-lg"
+                          : "bg-blue-900 text-blue-300"
+                      }`}
+                    >
+                      <Send size={20} />
                     </button>
                     <button
                       type="button"
-                      onClick={toggleMode}
-                      className="p-3 ml-2 text-gray-500 hover:bg-gray-100 rounded-full transition-colors shadow-sm"
+                      onClick={() => setActiveMode("voice")}
+                      className={`p-2 rounded-r-lg transition ${
+                        activeMode === "voice"
+                          ? "bg-purple-700 text-white shadow-lg"
+                          : "bg-purple-900 text-purple-300"
+                      }`}
                     >
                       <Mic size={20} />
                     </button>
-                  </form>
+                  </div>
+                  {/* Text Input or Voice Button */}
+                  {activeMode === "text" ? (
+                    <>
+                      <input
+                        type="text"
+                        value={inputText}
+                        onChange={(e) => setInputText(e.target.value)}
+                        placeholder="Type your message..."
+                        className="flex-grow p-2 rounded-lg bg-blue-950 text-blue-100 border border-blue-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        disabled={isProcessing || !isModelLoaded}
+                      />
+                      <button
+                        type="submit"
+                        disabled={
+                          !inputText.trim() || isProcessing || !isModelLoaded
+                        }
+                        className={`p-2 rounded-lg transition ${
+                          !inputText.trim() || isProcessing || !isModelLoaded
+                            ? "bg-blue-900 text-blue-400"
+                            : "bg-blue-600 text-white hover:bg-blue-700"
+                        }`}
+                      >
+                        {isProcessing ? (
+                          <Loader className="animate-spin" size={20} />
+                        ) : (
+                          <Send size={20} />
+                        )}
+                      </button>
+                    </>
+                  ) : (
+                    <div className="flex-grow flex items-center">
+                      <button
+                        type="button"
+                        onMouseDown={handleVoiceStart}
+                        onMouseUp={handleVoiceStop}
+                        onTouchStart={handleVoiceStart}
+                        onTouchEnd={handleVoiceStop}
+                        disabled={isProcessing || !isModelLoaded}
+                        className={`w-full flex items-center justify-center p-3 rounded-lg transition shadow-lg ${
+                          isListening
+                            ? "bg-gradient-to-r from-pink-600 to-purple-700 text-white animate-pulse"
+                            : isProcessing || !isModelLoaded
+                            ? "bg-blue-900 text-blue-400"
+                            : "bg-gradient-to-r from-blue-700 to-purple-700 text-white hover:scale-105"
+                        }`}
+                      >
+                        <Mic size={28} className="mr-2" />
+                        {isListening ? (
+                          <WaveformBars waveform={waveform} />
+                        ) : isProcessing ? (
+                          <Loader className="animate-spin" size={20} />
+                        ) : (
+                          "Hold to speak"
+                        )}
+                      </button>
+                    </div>
+                  )}
+                </form>
+                {/* Transcript display for voice mode */}
+                {activeMode === "voice" && transcript && (
+                  <div className="mt-2 text-sm text-blue-200 animate-fade-in">
+                    <span className="font-medium">You said:</span> {transcript}
+                  </div>
                 )}
               </div>
-            </>
-          )}
-        </div>
-      </div>
-    </div>
+            </motion.div>
+          </GlowingBorder>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 };
+
+// Animated brain icon
+const BrainGlow = () => (
+  <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+    <defs>
+      <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+        <stop offset="0%" stopColor="#fff" stopOpacity="1" />
+        <stop offset="100%" stopColor="#60a5fa" stopOpacity="0" />
+      </radialGradient>
+    </defs>
+    <circle cx="12" cy="12" r="11" fill="url(#glow)" />
+    <path
+      d="M8 12a4 4 0 018 0v2a4 4 0 01-8 0v-2z"
+      stroke="#fff"
+      strokeWidth="2"
+      fill="none"
+    />
+  </svg>
+);
+
+// Animated waveform for voice mode
+const WaveformBars = ({ waveform }) => (
+  <div className="flex items-end h-6 gap-[1px]">
+    {waveform.map((v, i) => (
+      <div
+        key={i}
+        style={{
+          height: `${8 + v * 16}px`,
+          width: "3px",
+          background: "linear-gradient(180deg, #fff 0%, #60a5fa 100%)",
+          borderRadius: "2px",
+          opacity: 0.7 + 0.3 * v,
+          transition: "height 0.1s",
+        }}
+      />
+    ))}
+  </div>
+);
 
 export default AIOverlay;

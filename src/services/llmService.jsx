@@ -1,815 +1,293 @@
-import { useState, useEffect, useRef, useCallback } from "react";
-import { LLM } from "../llm.js/llm.js";
+import React, { createContext, useContext, useState, useEffect, useRef } from "react";
+import * as webllm from "@mlc-ai/web-llm";
 
-const MODEL_CONFIG = {
-  url: "https://huggingface.co/afrideva/TinyMistral-248M-GGUF/resolve/main/tinymistral-248m.q2_k.gguf",
-  filename: "tinymistral-248m.q2_k.gguf",
-  bucketName: "nakprciotsystemslabs",
-  size: "150MB",
-};
+// Create context
+const LLMContext = createContext();
 
-const DEFAULT_LLM_PARAMS = {
-  temp: 0.7,
-  top_p: 0.9,
-  top_k: 40,
-  repeat_penalty: 1.1,
-  max_tokens: 1024,
-};
-
-let Filesystem, Directory, Device, Toast;
-
-const isCapacitorAvailable = () =>
-  typeof window !== "undefined" && window.Capacitor !== undefined;
-
-const showToast = async (message, duration = "short") => {
-  if (isCapacitorAvailable() && Toast) {
-    await Toast.show({ text: message, duration });
-  } else {
-    console.log(`Toast: ${message}`);
-  }
-};
-
-export const useLLM = () => {
+// Provider component
+export const LLMProvider = ({ children }) => {
+  const [llm, setLLM] = useState(null);
   const [isModelLoaded, setIsModelLoaded] = useState(false);
-  const [statusMessage, setStatusMessage] = useState("Initializing...");
-  const [downloadProgress, setDownloadProgress] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
-  const [isCheckingModel, setIsCheckingModel] = useState(false);
-  const [response, setResponse] = useState("");
-  const [error, setError] = useState(null);
-  const [deviceInfo, setDeviceInfo] = useState(null);
-  const [platform, setPlatform] = useState("web");
   const [isDownloading, setIsDownloading] = useState(false);
-  const [isModelStored, setIsModelStored] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState(0);
+  const [statusMessage, setStatusMessage] = useState("");
+  const [error, setError] = useState(null);
+  const [isCheckingModel, setIsCheckingModel] = useState(false);
   const [modelSize, setModelSize] = useState(0);
+  const [platform, setPlatform] = useState("");
+  const abortControllerRef = useRef(null);
 
-  const llmInstance = useRef(null);
-  const abortController = useRef(new AbortController());
-
-  useEffect(() => {
-    if (isCapacitorAvailable()) {
-      (async () => {
-        try {
-          const { Filesystem: fs, Directory: dir } = await import(
-            "@capacitor/filesystem"
-          );
-          const { Device: dev } = await import("@capacitor/device");
-          const { Toast: toast } = await import("@capacitor/toast");
-
-          Filesystem = fs;
-          Directory = dir;
-          Device = dev;
-          Toast = toast;
-
-          console.log("Capacitor plugins loaded successfully");
-        } catch (e) {
-          console.error("Capacitor plugin import failed:", e);
-          setError("Plugin initialization failed: " + e.message);
-        }
-      })();
-    }
-  }, []);
-
-  useEffect(() => {
-    const detectPlatform = async () => {
-      if (isCapacitorAvailable() && Device) {
-        try {
-          const info = await Device.getInfo();
-          setDeviceInfo(info);
-          setPlatform(info.platform);
-          console.log("Platform detected:", info.platform);
-        } catch (e) {
-          console.error("Failed to get device info:", e);
-          setPlatform("web");
-        }
-      } else {
-        setPlatform("web");
-      }
-    };
-    detectPlatform();
-  }, []);
-
-  const initializeModel = useCallback(
-    async (buffer) => {
-      if (!buffer) throw new Error("Empty model buffer");
-
-      if (llmInstance.current) {
-        try {
-          llmInstance.current.dispose();
-          llmInstance.current = null;
-        } catch (e) {
-          console.warn("Disposing LLM failed:", e);
-        }
-      }
-
-      return new Promise((resolve, reject) => {
-        try {
-          const deviceType = "GGUF_CPU";
-          setStatusMessage(`Initializing model...`);
-
-          const onProgress = (progress) => {
-            setStatusMessage(
-              `Initializing model... ${Math.round(progress * 100)}%`
-            );
-          };
-
-          const llm = new LLM(
-            deviceType,
-            buffer,
-            () => {
-              llmInstance.current = llm;
-              setIsModelLoaded(true);
-              setStatusMessage("Model ready");
-              resolve();
-            },
-            (text) => setResponse((prev) => prev + text),
-            onProgress
-          );
-        } catch (e) {
-          console.error("LLM initialization error:", e);
-          reject(new Error(`Model initialization failed: ${e.message}`));
-        }
-      });
-    },
-    [setStatusMessage, setResponse, setIsModelLoaded]
-  );
-
-  const downloadModel = useCallback(async () => {
-    if (isDownloading || isModelStored) return;
-
-    abortController.current = new AbortController();
-    setIsDownloading(true);
-    setStatusMessage("Downloading model...");
-    setDownloadProgress(0);
-    setError(null);
-
+  // Initialize LLM
+  const initializeLLM = async () => {
     try {
-      const response = await fetch(MODEL_CONFIG.url, {
-        signal: abortController.current.signal,
-      });
-
-      if (!response.ok) {
-        throw new Error(
-          `Download failed: ${response.status} ${response.statusText}`
-        );
-      }
-
-      const contentLength = response.headers.get("content-length");
-      const totalBytes = contentLength ? parseInt(contentLength, 10) : 0;
-      setModelSize(totalBytes);
-
-      let loadedBytes = 0;
-      const reader = response.body.getReader();
-      const chunks = [];
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        chunks.push(value);
-        loadedBytes += value.length;
-
-        if (totalBytes > 0) {
-          const progress = Math.round((loadedBytes / totalBytes) * 100);
-          setDownloadProgress(progress);
-          setStatusMessage(`Downloading model... ${progress}%`);
-        }
-      }
-
-      const concatenated = new Uint8Array(loadedBytes);
-      let position = 0;
-      for (const chunk of chunks) {
-        concatenated.set(chunk, position);
-        position += chunk.length;
-      }
-
-      const buffer = concatenated.buffer;
-
-      if (platform === "web") {
-        await saveModelToIndexedDB(MODEL_CONFIG.filename, buffer);
-      } else if (platform !== "web" && Filesystem) {
-        await saveModelToCapacitor(buffer);
-      } else {
-        setStatusMessage(
-          "Your browser does not support persistent storage for AI models. Please use a supported browser or platform."
-        );
-        setError(
-          "No supported storage mechanism found (IndexedDB or Capacitor)."
-        );
-        await showToast(
-          "No supported storage mechanism found. Try a different browser or platform.",
-          "long"
-        );
-        return null;
-      }
-
-      setIsModelStored(true);
-      setStatusMessage("Model download completed");
-      await showToast("Model download completed");
-
-      return buffer;
-    } catch (err) {
-      if (err.name === "AbortError") {
-        console.log("Download aborted");
-        setStatusMessage("Download aborted");
-        return null;
-      }
-
-      console.error("Model download failed:", err);
-      setStatusMessage("Download failed");
-      setError(err.message);
-
-      await showToast(`Download failed: ${err.message}`, "long");
-      throw err;
-    } finally {
-      setIsDownloading(false);
-    }
-  }, [
-    isDownloading,
-    isModelStored,
-    platform,
-    setIsDownloading,
-    setStatusMessage,
-    setDownloadProgress,
-    setError,
-    setModelSize,
-    saveModelToIndexedDB,
-    saveModelToCapacitor,
-    showToast,
-  ]);
-
-  const cancelDownload = () => {
-    if (isDownloading && abortController.current) {
-      abortController.current.abort();
-      setIsDownloading(false);
-      setStatusMessage("Download cancelled");
+      setIsLoading(true);
+      setStatusMessage("Initializing LLM...");
+      
+      // Create a new chat instance using the WebLLM class
+      const chat = new webllm.ChatModule();
+      setLLM(chat);
+      
+      // Get platform info
+      const platformInfo = await chat.detectPlatformInfo();
+      setPlatform(platformInfo.backend || "unknown");
+      
+      setIsLoading(false);
+      setStatusMessage("LLM initialized");
+      return chat;
+    } catch (error) {
+      console.error("Error initializing LLM:", error);
+      setError(error.message);
+      setIsLoading(false);
+      setStatusMessage("Initialization failed");
+      return null;
     }
   };
 
-  const loadModelFromStorage = useCallback(async () => {
-    if (platform === "web") {
-      try {
-        const buffer = await getModelFromIndexedDB(MODEL_CONFIG.filename);
-        setModelSize(buffer.byteLength);
-        console.log(
-          `File ${MODEL_CONFIG.filename} loaded successfully from IndexedDB (${buffer.byteLength} bytes)`
-        );
-        return buffer;
-      } catch (err) {
-        console.error("Failed to load model from IndexedDB:", err);
-        throw new Error(`Failed to load model: ${err.message}`);
-      }
-    } else if (platform !== "web") {
-      try {
-        if (!Filesystem) throw new Error("Filesystem not available");
-
-        const result = await Filesystem.readFile({
-          path: MODEL_CONFIG.filename,
-          directory: Directory.Data,
-        });
-
-        const binaryString = atob(result.data);
-        const bytes = new Uint8Array(binaryString.length);
-        for (let i = 0; i < binaryString.length; i++) {
-          bytes[i] = binaryString.charCodeAt(i);
-        }
-
-        setModelSize(bytes.buffer.byteLength);
-        return bytes.buffer;
-      } catch (err) {
-        console.error("Failed to load model:", err);
-        throw new Error(`Failed to load model: ${err.message}`);
-      }
-    } else {
-      throw new Error("No storage mechanism available");
-    }
-  }, [platform]);
-
-  const modelFileExists = useCallback(async () => {
-    if (platform === "web") {
-      try {
-        const exists = await checkModelInIndexedDB(MODEL_CONFIG.filename);
-        return exists;
-      } catch (e) {
-        console.error("Failed to check if model exists in IndexedDB:", e);
-        return false;
-      }
-    } else if (platform !== "web") {
-      try {
-        if (Filesystem) {
-          const result = await Filesystem.stat({
-            path: MODEL_CONFIG.filename,
-            directory: Directory.Data,
-          });
-          if (result && result.size > 0) {
-            setModelSize(result.size);
-            return true;
-          }
-        }
-        return false;
-      } catch (e) {
-        return false;
-      }
-    }
-    return false;
-  }, [platform]);
-
-  const checkModelExists = useCallback(async () => {
-    setIsLoading(true);
-    setIsCheckingModel(true);
-    setStatusMessage("Checking for model...");
-    setError(null);
-
+  // Check if model exists
+  const checkModelExists = async () => {
     try {
-      const fileExists = await modelFileExists();
-
-      if (fileExists) {
-        setStatusMessage("Model found. Loading...");
-        const modelData = await loadModelFromStorage();
-
-        if (modelData && (await isValidGGUF(modelData))) {
-          await initializeModel(modelData);
-          setStatusMessage("Model ready");
-          await showToast("Model loaded successfully");
-        } else {
-          setStatusMessage("Model invalid. Redownloading...");
-
-          if (platform === "web") {
-            await deleteModelFromIndexedDB(MODEL_CONFIG.filename);
-          } else if (platform !== "web") {
-            await deleteModelFromCapacitor();
-          }
-
-          setIsModelStored(false);
-          const newModelBuffer = await downloadModel();
-          if (newModelBuffer) {
-            await initializeModel(newModelBuffer);
-            setStatusMessage("Model ready");
-            await showToast("Model loaded successfully");
-          }
-        }
-      } else {
-        setStatusMessage("Model not found. Downloading...");
-        const modelBuffer = await downloadModel();
-        if (modelBuffer) {
-          await initializeModel(modelBuffer);
-          setStatusMessage("Model ready");
-          await showToast("Model loaded successfully");
-        }
+      setIsCheckingModel(true);
+      setStatusMessage("Checking model...");
+      
+      if (!llm) {
+        const chat = await initializeLLM();
+        if (!chat) return false;
       }
-    } catch (err) {
-      console.error("Model check error:", err);
-      setStatusMessage("Model check failed");
-      setError(err.message);
+      
+      // Use Llama-2-7b-chat-hf-q4f16_1 as the default model
+      const modelName = "Llama-2-7b-chat-hf-q4f16_1";
+      
+      try {
+        // Try to get model info
+        const modelInfo = await llm.getModelInfo(modelName);
+        
+        if (modelInfo) {
+          setModelSize(modelInfo.model_size || 0);
+          setIsModelLoaded(true);
+          setStatusMessage("Model loaded");
+          return true;
+        } else {
+          setIsModelLoaded(false);
+          setStatusMessage("Model not found");
+          return false;
+        }
+      } catch (e) {
+        console.log("Model not loaded yet:", e);
+        setIsModelLoaded(false);
+        setStatusMessage("Model not found");
+        return false;
+      }
+    } catch (error) {
+      console.error("Error checking model:", error);
+      setError(error.message);
+      setIsModelLoaded(false);
+      setStatusMessage("Check failed");
+      return false;
     } finally {
-      setIsLoading(false);
       setIsCheckingModel(false);
     }
-  }, [
-    platform,
-    initializeModel,
-    downloadModel,
-    loadModelFromStorage,
-    modelFileExists,
-  ]);
-
-  const loadPromptTemplate = async () => {
-    let promptTemplate = "{{USER_INPUT}}";
-    let parameters = { ...DEFAULT_LLM_PARAMS };
-
-    try {
-      const res = await fetch("./prompt.json", { cache: "no-store" }).catch(
-        () => null
-      );
-      if (res?.ok) {
-        const json = await res.json();
-        promptTemplate = json.template || promptTemplate;
-        parameters = { ...parameters, ...(json.parameters || {}) };
-      }
-    } catch (e) {
-      console.warn("Prompt template fetch failed:", e);
-    }
-
-    return { promptTemplate, parameters };
   };
 
-  const generateResponse = useCallback(
-    async (userInput) => {
-      if (!userInput || !userInput.trim()) {
+  // Download model
+  const downloadModel = async () => {
+    try {
+      setIsDownloading(true);
+      setError(null);
+      setStatusMessage("Starting download...");
+      
+      if (!llm) {
+        await initializeLLM();
+      }
+      
+      // Use Llama-2-7b-chat-hf-q4f16_1 as the default model
+      const modelName = "Llama-2-7b-chat-hf-q4f16_1";
+      
+      await llm.loadModel(modelName, {
+        progress: (progress) => {
+          setDownloadProgress(progress * 100);
+          setStatusMessage(`Downloading: ${Math.round(progress * 100)}%`);
+        }
+      });
+      
+      setIsModelLoaded(true);
+      setStatusMessage("Model loaded successfully");
+      return true;
+    } catch (error) {
+      console.error("Error downloading model:", error);
+      setError(error.message);
+      setStatusMessage("Download failed");
+      return false;
+    } finally {
+      setIsDownloading(false);
+    }
+  };
+
+  // Cancel download
+  const cancelDownload = () => {
+    if (llm) {
+      llm.unload();
+      setIsDownloading(false);
+      setStatusMessage("Download canceled");
+    }
+  };
+
+  // Generate response
+  const generateResponse = async (prompt) => {
+    if (!isModelLoaded) {
+      console.warn("Model not loaded yet, cannot generate response");
+      return null;
+    }
+
+    try {
+      setIsLoading(true);
+      
+      // Create abort controller
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
+      
+      console.log("Sending prompt to LLM:", prompt);
+      
+      // Use chat method
+      const response = await llm.chat({
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.7,
+        max_tokens: 1000,
+        signal: controller.signal
+      });
+      
+      console.log("LLM response:", response);
+      
+      if (!response || !response.content) {
+        console.warn("Empty response from LLM");
         return null;
       }
-
-      if (!llmInstance.current || !isModelLoaded) {
-        const msg = "Model not ready. Please wait for model to load.";
-        setError(msg);
-        await showToast(msg);
+      
+      return response.content;
+    } catch (error) {
+      if (error.name === "AbortError") {
+        console.log("LLM generation was aborted");
         return null;
       }
+      
+      console.error("Error generating response:", error);
+      setError(error.message);
+      return null;
+    } finally {
+      setIsLoading(false);
+      abortControllerRef.current = null;
+    }
+  };
 
-      try {
-        const { promptTemplate, parameters } = await loadPromptTemplate();
-        const prompt = promptTemplate.replace(
-          "{{USER_INPUT}}",
-          userInput.trim()
-        );
-
-        setResponse("");
-        setStatusMessage("Generating response...");
-        setIsLoading(true);
-        setError(null);
-
-        await showToast("Generating response...");
-
-        const result = await new Promise((resolve, reject) => {
-          try {
-            llmInstance.current.callback = (text) => {
-              setResponse((prev) => prev + text);
-            };
-
-            llmInstance.current.onComplete = () => {
-              resolve(llmInstance.current.output || response);
-            };
-
-            llmInstance.current.run({ prompt, ...parameters });
-          } catch (err) {
-            console.error("LLM run failed:", err);
-            reject(err);
+  // Query to LLM function with retry logic
+  const queryToLLM = async (userQuery) => {
+    try {
+      // Check if model is loaded
+      if (!isModelLoaded) {
+        const modelExists = await checkModelExists();
+        if (!modelExists) {
+          console.log("Model not loaded, attempting to download...");
+          await downloadModel();
+        }
+      }
+      
+      // Retry logic for generating responses
+      let response = null;
+      let retryCount = 0;
+      const maxRetries = 3;
+      
+      while (!response && retryCount < maxRetries) {
+        try {
+          console.log(`Attempt ${retryCount + 1}/${maxRetries} to generate response`);
+          response = await generateResponse(userQuery);
+          
+          if (!response) {
+            console.warn(`Attempt ${retryCount + 1}: Received null response from LLM`);
+            retryCount++;
+            
+            if (retryCount < maxRetries) {
+              // Wait before retrying
+              await new Promise(resolve => setTimeout(resolve, 1000));
+            }
           }
-        });
-
-        setStatusMessage("Response complete");
-        return result;
-      } catch (err) {
-        console.error("LLM run failed:", err);
-        setError(`Generation failed: ${err.message}`);
-        setStatusMessage("Generation failed");
-        await showToast(`Error: ${err.message}`, "long");
-        return null;
-      } finally {
-        setIsLoading(false);
-      }
-    },
-    [isModelLoaded, response]
-  );
-
-  const redownloadModel = async () => {
-    try {
-      setIsLoading(true);
-      setIsModelLoaded(false);
-      setStatusMessage("Redownloading model...");
-      setError(null);
-
-      if (llmInstance.current) {
-        try {
-          llmInstance.current.dispose();
-        } catch (e) {
-          console.warn("Disposing LLM failed:", e);
+        } catch (error) {
+          console.error(`Error in attempt ${retryCount + 1}:`, error);
+          retryCount++;
+          
+          if (retryCount < maxRetries) {
+            // Wait before retrying
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
         }
-        llmInstance.current = null;
       }
-
-      if (platform === "web") {
-        await deleteModelFromIndexedDB(MODEL_CONFIG.filename);
-      } else if (platform !== "web") {
-        await deleteModelFromCapacitor();
-      }
-
-      const modelBuffer = await downloadModel();
-      if (modelBuffer) {
-        await initializeModel(modelBuffer);
-        setStatusMessage("Model ready");
-        await showToast("Model redownloaded and initialized");
-        return true;
-      }
-      return false;
-    } catch (err) {
-      console.error("Redownload error:", err);
-      setError(`Redownload error: ${err.message}`);
-      return false;
-    } finally {
-      setIsLoading(false);
+      
+      return response;
+    } catch (error) {
+      console.error("Error in queryToLLM:", error);
+      return null;
     }
   };
 
-  const resetModel = async () => {
-    try {
-      setIsLoading(true);
-      setIsModelLoaded(false);
-      setStatusMessage("Resetting model...");
-      setError(null);
-
-      if (llmInstance.current) {
-        try {
-          llmInstance.current.dispose();
-        } catch (e) {
-          console.warn("Disposing LLM failed:", e);
-        }
-        llmInstance.current = null;
-      }
-
-      if (platform === "web") {
-        await deleteModelFromIndexedDB(MODEL_CONFIG.filename);
-      } else if (platform !== "web") {
-        await deleteModelFromCapacitor();
-      }
-
-      setIsModelStored(false);
-      setStatusMessage("Model reset completed");
-      await showToast("Model reset completed");
-    } catch (err) {
-      console.error("Reset model error:", err);
-      setError(`Reset model error: ${err.message}`);
-    } finally {
+  // Stop generation
+  const stopGeneration = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
       setIsLoading(false);
+      setStatusMessage("Generation stopped");
     }
   };
 
+  // Initialize LLM on component mount
   useEffect(() => {
+    initializeLLM().then(() => {
+      checkModelExists();
+    });
+    
+    // Cleanup on unmount
     return () => {
-      if (llmInstance.current) {
-        try {
-          llmInstance.current.dispose();
-        } catch (e) {
-          console.warn("Disposing LLM failed on unmount:", e);
-        }
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
       }
-
-      if (isDownloading) {
-        abortController.current.abort();
+      if (llm) {
+        llm.unload();
       }
     };
-  }, [isDownloading]);
+  }, []);
 
-  return {
+  // Context value
+  const contextValue = {
+    llm,
     isModelLoaded,
-    statusMessage,
-    downloadProgress,
     isLoading,
-    isCheckingModel,
-    response,
+    isDownloading,
+    downloadProgress,
+    statusMessage,
     error,
-    deviceInfo,
-    platform,
+    isCheckingModel,
     modelSize,
-    generateResponse,
+    platform,
+    initializeLLM,
+    checkModelExists,
     downloadModel,
     cancelDownload,
-    redownloadModel,
-    checkModelExists,
-    resetModel,
+    generateResponse,
+    queryToLLM,
+    stopGeneration
   };
+
+  return (
+    <LLMContext.Provider value={contextValue}>
+      {children}
+    </LLMContext.Provider>
+  );
 };
 
-const isValidGGUF = async (modelData) => {
-  try {
-    if (!modelData || modelData.byteLength < 100 * 1024) {
-      console.warn("Model data is too small to be valid GGUF");
-      return false;
-    }
-
-    const header = new Uint8Array(modelData, 0, 4);
-    const magicBytes = [0x47, 0x47, 0x55, 0x46];
-    const hasValidMagic = header.every((byte, i) => byte === magicBytes[i]);
-
-    if (!hasValidMagic) {
-      console.warn("Model does not have valid GGUF header");
-      return false;
-    }
-
-    const version = new DataView(modelData).getUint32(4, true);
-    console.log(`GGUF version: ${version}`);
-
-    if (version > 100) {
-      console.warn("Model has suspicious GGUF version number");
-      return false;
-    }
-
-    console.log("Model passed GGUF validation");
-    return true;
-  } catch (err) {
-    console.error("GGUF validation failed:", err);
-    return false;
+// Custom hook
+export const useLLM = () => {
+  const context = useContext(LLMContext);
+  if (!context) {
+    throw new Error("useLLM must be used within an LLMProvider");
   }
-};
-
-const saveModelToCapacitor = async (buffer) => {
-  try {
-    if (!Filesystem) throw new Error("Filesystem not available");
-
-    const chunkSize = 1024 * 1024;
-    const totalChunks = Math.ceil(buffer.byteLength / chunkSize);
-    let base64Data = "";
-
-    for (let i = 0; i < totalChunks; i++) {
-      const start = i * chunkSize;
-      const end = Math.min(start + chunkSize, buffer.byteLength);
-      const chunk = buffer.slice(start, end);
-
-      const binary = Array.from(new Uint8Array(chunk))
-        .map((byte) => String.fromCharCode(byte))
-        .join("");
-
-      base64Data += btoa(binary);
-    }
-
-    await Filesystem.writeFile({
-      path: MODEL_CONFIG.filename,
-      data: base64Data,
-      directory: Directory.Data,
-    });
-
-    console.log(
-      `File ${MODEL_CONFIG.filename} saved to Capacitor (${buffer.byteLength} bytes)`
-    );
-  } catch (err) {
-    console.error("Failed to save model to Capacitor:", err);
-    throw new Error(`Failed to save model: ${err.message}`);
-  }
-};
-
-const saveModelToIndexedDB = async (filename, buffer) => {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open("AIModelDB", 1);
-
-    request.onerror = (event) => {
-      console.error("IndexedDB error:", event.target.error);
-      reject(new Error("IndexedDB error: " + event.target.error.message));
-    };
-
-    request.onsuccess = (event) => {
-      const db = event.target.result;
-      const transaction = db.transaction("models", "readwrite");
-      const objectStore = transaction.objectStore("models");
-
-      const getRequest = objectStore.get(filename);
-      getRequest.onsuccess = () => {
-        if (getRequest.result) {
-          objectStore.delete(filename);
-          console.log(`Previous model file removed`);
-        }
-
-        const putRequest = objectStore.put({ filename, buffer });
-        putRequest.onsuccess = () => {
-          console.log(
-            `File ${filename} saved to IndexedDB (${buffer.byteLength} bytes)`
-          );
-          resolve();
-        };
-
-        putRequest.onerror = (event) => {
-          console.error(
-            "Failed to save model to IndexedDB:",
-            event.target.error
-          );
-          reject(
-            new Error("Failed to save model: " + event.target.error.message)
-          );
-        };
-      };
-
-      getRequest.onerror = (event) => {
-        console.error(
-          "Failed to check/remove existing file:",
-          event.target.error
-        );
-        reject(
-          new Error(
-            "Failed to check/remove existing file: " +
-              event.target.error.message
-          )
-        );
-      };
-    };
-
-    request.onupgradeneeded = (event) => {
-      const db = event.target.result;
-      if (!db.objectStoreNames.contains("models")) {
-        db.createObjectStore("models", { keyPath: "filename" });
-      }
-    };
-  });
-};
-
-const deleteModelFromIndexedDB = async (filename) => {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open("AIModelDB", 1);
-
-    request.onerror = (event) => {
-      console.error("IndexedDB error:", event.target.error);
-      reject(new Error("IndexedDB error: " + event.target.error.message));
-    };
-
-    request.onsuccess = (event) => {
-      const db = event.target.result;
-      const transaction = db.transaction("models", "readwrite");
-      const objectStore = transaction.objectStore("models");
-
-      const deleteRequest = objectStore.delete(filename);
-      deleteRequest.onsuccess = () => {
-        console.log(`File ${filename} deleted from IndexedDB`);
-        resolve();
-      };
-
-      deleteRequest.onerror = (event) => {
-        console.error(
-          "Failed to delete model from IndexedDB:",
-          event.target.error
-        );
-        reject(
-          new Error("Failed to delete model: " + event.target.error.message)
-        );
-      };
-    };
-  });
-};
-
-const getModelFromIndexedDB = async (filename) => {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open("AIModelDB", 1);
-
-    request.onerror = (event) => {
-      console.error("IndexedDB error:", event.target.error);
-      reject(new Error("IndexedDB error: " + event.target.error.message));
-    };
-
-    request.onsuccess = (event) => {
-      const db = event.target.result;
-      const transaction = db.transaction("models", "readonly");
-      const objectStore = transaction.objectStore("models");
-
-      const getRequest = objectStore.get(filename);
-      getRequest.onsuccess = () => {
-        if (getRequest.result) {
-          const buffer = getRequest.result.buffer;
-          resolve(buffer);
-        } else {
-          reject(new Error(`File ${filename} not found in IndexedDB`));
-        }
-      };
-
-      getRequest.onerror = (event) => {
-        console.error(
-          "Failed to load model from IndexedDB:",
-          event.target.error
-        );
-        reject(
-          new Error("Failed to load model: " + event.target.error.message)
-        );
-      };
-    };
-  });
-};
-
-const checkModelInIndexedDB = async (filename) => {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open("AIModelDB", 1);
-
-    request.onerror = (event) => {
-      console.error("IndexedDB error:", event.target.error);
-      reject(new Error("IndexedDB error: " + event.target.error.message));
-    };
-
-    request.onsuccess = (event) => {
-      const db = event.target.result;
-      const transaction = db.transaction("models", "readonly");
-      const objectStore = transaction.objectStore("models");
-
-      const getRequest = objectStore.get(filename);
-      getRequest.onsuccess = () => {
-        resolve(!!getRequest.result);
-      };
-
-      getRequest.onerror = (event) => {
-        console.error(
-          "Failed to check model in IndexedDB:",
-          event.target.error
-        );
-        reject(
-          new Error("Failed to check model: " + event.target.error.message)
-        );
-      };
-    };
-
-    request.onupgradeneeded = (event) => {
-      const db = event.target.result;
-      if (!db.objectStoreNames.contains("models")) {
-        db.createObjectStore("models", { keyPath: "filename" });
-      }
-    };
-  });
-};
-
-const deleteModelFromCapacitor = async () => {
-  try {
-    if (!Filesystem) throw new Error("Filesystem not available");
-
-    await Filesystem.deleteFile({
-      path: MODEL_CONFIG.filename,
-      directory: Directory.Data,
-    });
-
-    console.log(`File ${MODEL_CONFIG.filename} deleted from Capacitor`);
-  } catch (err) {
-    console.error("Failed to delete model from Capacitor:", err);
-    throw new Error(`Failed to delete model: ${err.message}`);
-  }
+  return context;
 };

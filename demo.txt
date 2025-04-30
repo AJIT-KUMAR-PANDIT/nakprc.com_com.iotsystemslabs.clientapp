@@ -1,536 +1,363 @@
-// src/services/LLMService.jsx
-// Unified implementation for both web and mobile platforms using Capacitor
+Model Records in WebLLM¶
+Each of the model available WebLLM is registered as an instance of ModelRecord and can be accessed at webllm.prebuiltAppConfig.model_list.
 
-import { useState, useEffect, useRef, useCallback } from "react";
-import { LLM } from "../llm.js/llm.js";
+Creating an MLCEngine¶
+WebLLM APIs are exposed through the MLCEngine interface. You can create an MLCEngine instance and loading the model by calling the CreateMLCEngine() factory function.
 
-// Capacitor plugin references
-let Filesystem, Directory, Device, Toast;
+(Note that loading models requires downloading and it can take a significant amount of time for the very first run without caching previously. You should properly handle this asynchronous call.)
 
-// Detect if Capacitor is available
-const isCapacitorAvailable = () =>
-  typeof window !== "undefined" && window.Capacitor !== undefined;
+MLCEngine can be instantiated in two ways: 1. Using the factory function CreateMLCEngine. 2. Instantiating the MLCEngine class directly and using reload() to load models.
 
-// Helper: Show toast cross-platform
-const showToast = async (message, duration = "short") => {
-  if (isCapacitorAvailable() && Toast) {
-    await Toast.show({ text: message, duration });
-  } else {
-    console.log(`Toast: ${message}`);
-  }
+import { CreateMLCEngine, MLCEngine } from "@mlc-ai/web-llm";
+
+ // Initialize with a progress callback
+ const initProgressCallback = (progress) => {
+     console.log("Model loading progress:", progress);
+ };
+
+// Using CreateMLCEngine
+const engine = await CreateMLCEngine("Llama-3.1-8B-Instruct", { initProgressCallback });
+
+// Direct instantiation
+const engineInstance = new MLCEngine({ initProgressCallback });
+await engineInstance.reload("Llama-3.1-8B-Instruct");
+Under the hood, this factory function CreateMLCEngine does the following steps for first creating an engine instance (synchronous) and then loading the model (asynchronous). You can also do them separately in your application.
+
+import { MLCEngine } from "@mlc-ai/web-llm";
+
+// This is a synchronous call that returns immediately
+const engine = new MLCEngine({
+    initProgressCallback: initProgressCallback
+});
+
+// This is an asynchronous call and can take a long time to finish
+await engine.reload(selectedModel);
+Chat Completion¶
+Chat completions can be invoked using OpenAI style chat APIs through the engine.chat.completions interface of an initialized MLCEgnine. For the full list of parameters and their descriptions, check WebLLM API Reference for full list of parameters.
+
+(Note: As model is determined at the MLCEngine initialization time, model parameter is not supported and will be ignored. Instead, call CreateMLCEngine(model) or engine.reload(model) to reinitialize the engine to use a specific model.)
+
+const messages = [
+    { role: "system", content: "You are a helpful AI assistant." },
+    { role: "user", content: "Hello!" }
+];
+
+const reply = await engine.chat.completions.create({
+    messages,
+});
+
+console.log(reply.choices[0].message);
+console.log(reply.usage);
+Streaming Chat Completion¶
+Streaming chat completion could be enabled by passsing stream: true parameter to the engine.chat.completions.create call configuration. Check WebLLM API Reference for full list of parameters.
+
+const messages = [
+    { role: "system", content: "You are a helpful AI assistant." },
+    { role: "user", content: "Hello!" },
+]
+
+// Chunks is an AsyncGenerator object
+const chunks = await engine.chat.completions.create({
+    messages,
+    temperature: 1,
+    stream: true, // <-- Enable streaming
+    stream_options: { include_usage: true },
+});
+
+let reply = "";
+for await (const chunk of chunks) {
+    reply += chunk.choices[0]?.delta.content || "";
+    console.log(reply);
+    if (chunk.usage) {
+        console.log(chunk.usage); // only last chunk has usage
+    }
+}
+
+const fullReply = await engine.getMessage();
+console.log(fullReply);
+Chatbot Examples¶
+Learn how to use WebLLM to integrate large language models into your applications and generate chat completions through this simple Chatbot example:
+
+Example in JSFiddle
+
+Example in CodePen
+
+For an advanced example of a larger, more complicated project, check WebLLM Chat.
+
+
+
+
+
+
+Advanced Use Cases¶
+Using Workers¶
+You can put the heavy computation in a worker script to optimize your application performance. To do so, you need to:
+
+Create a handler in the worker thread that communicates with the frontend while handling the requests. Create a Worker Engine in your main application, which under the hood sends messages to the handler in the worker thread. For detailed implementations of different kinds of Workers, check the following sections.
+
+Using Web Workers¶
+WebLLM comes with API support for Web Workers so you can offload the computation-heavy generation work into a separate worker thread. WebLLM has implemented the cross-thread communication through messages under the hood so you don’t need to manually implement it any more.
+
+In the worker script, import and instantiate WebWorkerMLCEngineHandler, which handles the communications with other scripts and processes incoming requests.
+
+// worker.ts
+import { WebWorkerMLCEngineHandler } from "@mlc-ai/web-llm";
+
+const handler = new WebWorkerMLCEngineHandler();
+self.onmessage = (msg: MessageEvent) => {
+    handler.onmessage(msg);
 };
+In the main script, import and instantiate a WebWorkerMLCEngine that implements the same MLCEngineInterface and exposes the same APIs, then simply use it as how you would use a normal MLCEngine in your application.
 
-// Hook: Unified LLM logic
-export const useLLM = () => {
-  const [isModelLoaded, setIsModelLoaded] = useState(false);
-  const [statusMessage, setStatusMessage] = useState("Initializing...");
-  const [downloadProgress, setDownloadProgress] = useState(0);
-  const [isLoading, setIsLoading] = useState(false);
-  const [response, setResponse] = useState("");
-  const [error, setError] = useState(null);
-  const [deviceInfo, setDeviceInfo] = useState(null);
-  const [platform, setPlatform] = useState("web");
+import { CreateWebWorkerMLCEngine } from "@mlc-ai/web-llm";
 
-  const llmInstance = useRef(null);
+async function runWorker() {
+    const engine = await CreateWebWorkerMLCEngine(
+        new Worker(new URL("./worker.ts", import.meta.url), { type: "module" }),
+        "Llama-3.1-8B-Instruct"
+    );
 
-  const modelUrl =
-    "https://huggingface.co/afrideva/TinyMistral-248M-GGUF/resolve/main/tinymistral-248m.q2_k.gguf";
-  const modelFileName = "tinymistral-248m.q2_k.gguf";
+    const messages = [{ role: "user", content: "How does WebLLM use workers?" }];
+    const reply = await engine.chat.completions.create({ messages });
+    console.log(reply.choices[0].message.content);
+}
 
-  // Dynamic Capacitor plugin import
-  useEffect(() => {
-    if (isCapacitorAvailable()) {
-      (async () => {
-        try {
-          const { Filesystem: fs, Directory: dir } = await import(
-            "@capacitor/filesystem"
-          );
-          const { Device: dev } = await import("@capacitor/device");
-          const { Toast: toast } = await import("@capacitor/toast");
+runWorker();
+Under the hood, WebWorkerMLCEngine does not actual doing any computation, but instead serves as a proxy to translate all calls into messages and send to the WebWorkerMLCEngineHandler to process. The worker thread will receive these messages and process the actual computation using a hidden engine, and return the result back to the main thread using messages.
 
-          Filesystem = fs;
-          Directory = dir;
-          Device = dev;
-          Toast = toast;
-        } catch (e) {
-          console.warn("Capacitor plugin import failed:", e);
-        }
-      })();
-    }
-  }, []);
+Service Workers¶
+WebLLM also support offloading the computation in Service Workers to avoid reloading the model between page refreshes and optimize your application’s offline experience.
 
-  // Detect platform
-  useEffect(() => {
-    const detectPlatform = async () => {
-      if (isCapacitorAvailable() && Device) {
-        const info = await Device.getInfo();
-        setDeviceInfo(info);
-        setPlatform(info.platform);
-        console.log("Platform detected:", info.platform);
-      } else {
-        setPlatform("web");
-      }
-    };
-    detectPlatform();
-  }, []);
+(Note, Service Worker’s life cycle is managed by the browser and can be killed any time without notifying the webapp. WebLLM’s ServiceWorkerMLCEngine will try to keep the service worker thread alive by periodically sending heartbeat events, but the script could still be killed any time by Chrome and your application should include proper error handling. Check keepAliveMs and missedHeatbeat in ServiceWorkerMLCEngine for more details.)
 
-  // Init on platform detected
-  useEffect(() => {
-    if (platform === "web" && "serviceWorker" in navigator) {
-      navigator.serviceWorker
-        .register("/opfs-sw.js")
-        .then((reg) => console.log("SW registered:", reg.scope))
-        .catch((err) => {
-          console.error("SW registration failed:", err);
-          setError("Service Worker registration failed.");
-        });
-    }
+In the worker script, import and instantiate ServiceWorkerMLCEngineHandler, which handles the communications with page scripts and processes incoming requests.
 
-    checkModelExists();
+// sw.ts
+import { ServiceWorkerMLCEngineHandler } from "@mlc-ai/web-llm";
 
-    return () => {
-      if (llmInstance.current) {
-        try {
-          llmInstance.current.dispose();
-        } catch (e) {
-          console.warn("Error disposing LLM instance:", e);
-        }
-      }
-    };
-  }, [platform, checkModelExists]); // Add checkModelExists to dependencies
+self.addEventListener("activate", () => {
+    const handler = new ServiceWorkerMLCEngineHandler();
+    console.log("Service Worker activated!");
+});
+Then in the main page script, register the service worker and instantiate the engine using CreateServiceWorkerMLCEngine factory function. The Engine implements the same MLCEngineInterface and exposes the same APIs, then simply use it as how you would use a normal MLCEngine in your application.
 
-  const initializeModel = async (buffer) => {
-    if (!buffer) throw new Error("Empty model buffer");
+// main.ts
+import { MLCEngineInterface, CreateServiceWorkerMLCEngine } from "@mlc-ai/web-llm";
 
-    if (llmInstance.current) {
-      try {
-        llmInstance.current.dispose();
-      } catch (e) {
-        console.warn("Disposing LLM failed:", e);
-      }
-    }
+if ("serviceWorker" in navigator) {
+navigator.serviceWorker.register(
+    new URL("sw.ts", import.meta.url),  // worker script
+    { type: "module" },
+);
+}
 
-    return new Promise((resolve, reject) => {
-      try {
-        const deviceType = "GGUF_CPU";
-        setStatusMessage(`Initializing model using ${deviceType}...`);
+const engine: MLCEngineInterface =
+await CreateServiceWorkerMLCEngine(
+    selectedModel,
+    { initProgressCallback }, // engineConfig
+);
+Similar to the WebWorkerMLCEngine above, the ServiceWorkerMLCEngine is also a proxy and does not do any actual computation. Instead it sends all calls to the service worker thread to handle and receives the result back through messages.
 
-        const llm = new LLM(
-          deviceType,
-          buffer,
-          () => {
-            llmInstance.current = llm;
-            resolve();
-          },
-          (text) => setResponse((prev) => prev + text)
-        );
-      } catch (e) {
-        console.error("LLM init error:", e);
-        reject(e);
-      }
-    });
-  };
+Chrome Extension¶
+WebLLM can be used in Chrome extensions to empower local LLM inference. You can find examples of building Chrome extension using WebLLM in examples/chrome-extension and examples/chrome-extension-webgpu-service-worker. The latter one leverages service worker, so the extension is persistent in the background.
 
-  const generateResponse = useCallback(
-    async (userInput) => {
-      if (!userInput || !llmInstance.current || !isModelLoaded) {
-        const msg = "Model not ready or input missing";
-        setError(msg);
-        await showToast(msg);
-        return null;
-      }
+Additionally, we have a full Chrome extension project, WebLLM Assistant, which leverages WebLLM to provide personal web browsing copilot assistance experience. Free to to check it out and contribute if you are interested.
 
-      let prompt = "{{USER_INPUT}}";
-      let llmParams = {
-        temp: 0.7,
-        top_p: 0.9,
-        top_k: 40,
-        repeat_penalty: 1.1,
-        max_tokens: 1024,
-      };
+Other Customization¶
+Using IndexedDB Cache¶
+Set appConfig in MLCEngineConfig to enable caching for faster subsequent model loads.
 
-      try {
-        const res = await fetch("./prompt.json", { cache: "no-store" }).catch(
-          () => null
-        );
-        if (res?.ok) {
-          const json = await res.json();
-          prompt = json.template || prompt;
-          llmParams = { ...llmParams, ...(json.parameters || {}) };
-        }
-      } catch (e) {
-        console.warn("Prompt template fetch failed:", e);
-      }
-
-      prompt = prompt.replace("{{USER_INPUT}}", userInput.trim());
-      setResponse("");
-      setStatusMessage("Generating response...");
-      setIsLoading(true);
-
-      try {
-        await showToast("Generating response...");
-
-        const result = await new Promise((resolve, reject) => {
-          try {
-            llmInstance.current.callback = (text) =>
-              setResponse((prev) => prev + text);
-            llmInstance.current.onComplete = () => {
-              resolve(llmInstance.current.output || response);
-            };
-
-            llmInstance.current.run({ prompt, ...llmParams });
-          } catch (err) {
-            console.error("LLM run failed:", err);
-            reject(err); // Use reject to handle errors
-          }
-        });
-
-        setStatusMessage("Response complete");
-        return result;
-      } catch (err) {
-        console.error("LLM run failed:", err);
-        setError(`Generation failed: ${err.message}`);
-        setStatusMessage("Generation failed");
-        await showToast(`Error: ${err.message}`, "long");
-        return null;
-      } finally {
-        setIsLoading(false);
-      }
+const engine = await CreateMLCEngine("Llama-3.1-8B-Instruct", {
+    appConfig: {
+        useIndexedDB: true,
+        models: [
+            { model_id: "Llama-3.1-8B", model_path: "/models/llama3" },
+        ],
     },
-    [isModelLoaded, llmInstance, response]
-  ); // Updated dependencies
+});
+Customizing Token Behavior¶
+Modify logit_bias in GenerationConfig to influence token likelihood:
 
-  const redownloadModel = async () => {
-    try {
-      setIsLoading(true);
-      setIsModelLoaded(false);
-      setStatusMessage("Redownloading model...");
+const messages = [
+    { role: "user", content: "Describe WebLLM in detail." },
+];
 
-      if (llmInstance.current) {
-        llmInstance.current.dispose();
-        llmInstance.current = null;
-      }
+const response = await engine.chatCompletion({
+    messages,
+    logit_bias: { "50256": -100 }, // Example: Prevent specific token generation
+});
+backtop
+© 2023 MLC LLM
 
-      if (platform === "web") {
-        await deleteModelFromOPFS(modelFileName);
-      } else {
-        await deleteModelFromCapacitor();
-      }
 
-      const success = await downloadModel();
-      if (success) {
-        await showToast("Model redownloaded");
-        return true;
-      } else {
-        setError("Model redownload failed");
-        return false;
-      }
-    } catch (err) {
-      console.error("Redownload error:", err);
-      setError(`Redownload error: ${err.message}`);
-      return false;
-    } finally {
-      setIsLoading(false);
-    }
-  };
 
-  const modelFileExists = useCallback(async () => {
-    if (platform === "web") {
-      return await checkFileExistsInOPFS(modelFileName);
-    } else {
-      try {
-        if (Filesystem) {
-          const result = await Filesystem.stat({
-            path: modelFileName,
-            directory: Directory.Data,
-          });
-          return result.size > 0;
-        }
-        return false;
-      } catch (e) {
-        return false;
-      }
-    }
-  }, [platform, modelFileName]); // Add dependencies
 
-  const checkModelExists = useCallback(async () => {
-    setIsLoading(true);
-    setStatusMessage("Checking for model...");
-    setError(null);
+WebLLM API Reference¶
+The MLCEngine class is the core interface of WebLLM. It enables model loading, chat completions, embeddings, and other operations. Below, we document its methods, along with the associated configuration interfaces.
 
-    try {
-      const fileExists = await modelFileExists();
+Interfaces¶
+The following interfaces are used as parameters or configurations within MLCEngine methods. They are linked to their respective methods for reference.
 
-      if (fileExists) {
-        setStatusMessage("Model found. Loading...");
-        const modelData = await loadModelFromStorage();
+MLCEngineConfig¶
+Optional configurations for CreateMLCEngine() and CreateWebWorkerMLCEngine().
 
-        if (modelData && (await isValidGGUF(modelData))) {
-          await initializeModel(modelData);
-          setIsModelLoaded(true);
-          setStatusMessage("Model ready");
-          await showToast("Model loaded successfully");
-        } else {
-          console.log("Invalid model found, redownloading...");
-          if (platform === "web") {
-            await deleteModelFromOPFS(modelFileName);
-          } else {
-            await deleteModelFromCapacitor();
-          }
-          await downloadModel();
-        }
-      } else {
-        setStatusMessage("Model not found. Downloading...");
-        await downloadModel();
-      }
-    } catch (err) {
-      console.error("Model check error:", err);
-      setStatusMessage("Model check failed");
-      setError(err.message);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [
-    platform,
-    modelFileName,
-    initializeModel,
-    downloadModel,
-    loadModelFromStorage,
-    modelFileExists,
-    showToast,
-  ]); // Updated dependencies
+Fields:
+appConfig: Configure the app, including the list of models and whether to use IndexedDB cache.
 
-  const deleteModelFromOPFS = async (filename) => {
-    try {
-      // Implement logic to delete the file from OPFS using the filename
-      console.log(`Attempting to delete ${filename} from OPFS`);
-      // Placeholder logic for deletion
-      console.warn("deleteModelFromOPFS is not yet implemented.");
-    } catch (e) {
-      console.error("Error deleting model from OPFS:", e);
-    }
-  };
+initProgressCallback: A callback for showing the progress of loading the model.
 
-  const deleteModelFromCapacitor = async () => {
-    console.warn("deleteModelFromCapacitor is not yet implemented.");
-  };
+logitProcessorRegistry: A register for stateful logit processors, see webllm.LogitProcessor.
 
-  const downloadModel = async () => {
-    setStatusMessage("Downloading model...");
-    setDownloadProgress(0);
+Usage:
+appConfig: Contains application-specific settings, including:
+Model configurations.
 
-    try {
-      const response = await fetch(modelUrl);
+IndexedDB caching preferences.
 
-      if (!response.ok) {
-        throw new Error(
-          `Download failed: ${response.status} ${response.statusText}`
-        );
-      }
+initProgressCallback: Allows developers to visualize model loading progress by implementing a callback.
 
-      const contentLength = Number(
-        response.headers.get("Content-Length") || "0"
-      );
-      const reader = response.body.getReader();
-      let receivedLength = 0;
-      const chunks = [];
+logitProcessorRegistry: A Map object for registering custom logit processors. Only applies to MLCEngine.
 
-      // Read the stream
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+Note
 
-        chunks.push(value);
-        receivedLength += value.length;
+All fields are optional, and logitProcessorRegistry is only used for MLCEngine.
 
-        // Update progress
-        if (contentLength) {
-          const progress = Math.floor((receivedLength / contentLength) * 100);
-          setDownloadProgress(progress);
-          setStatusMessage(`Downloading model: ${progress}%`);
-        }
-      }
+Example:
 
-      // Concatenate chunks into a single array buffer
-      const buffer = new Uint8Array(receivedLength);
-      let position = 0;
-      for (let chunk of chunks) {
-        buffer.set(chunk, position);
-        position += chunk.length;
-      }
+const engine = await CreateMLCEngine("Llama-3.1-8B-Instruct", {
+    appConfig: { /* app-specific config */ },
+    initProgressCallback: (progress) => console.log(progress),
+});
+GenerationConfig¶
+Configurations for a single generation task, primarily used in chat completions.
 
-      // Save to appropriate storage
-      if (platform === "web") {
-        await saveModelToOPFS(modelFileName, buffer);
-      } else {
-        await saveModelToCapacitor(buffer);
-      }
+Fields:
+repetition_penalty, ignore_eos: Specific to MLC models.
 
-      console.log("Model downloaded and saved successfully");
-      setStatusMessage("Model downloaded. Initializing...");
+top_p, temperature, max_tokens, stop: Common with OpenAI APIs.
 
-      // Initialize the model
-      await initializeModel(buffer.buffer);
-      setIsModelLoaded(true);
-      setStatusMessage("Model ready");
+logit_bias, n: Additional parameters for sampling control.
 
-      await showToast("Model downloaded and ready");
+Usage:
+Fields like repetition_penalty and ignore_eos allow fine control over the output generation behavior.
 
-      return true;
-    } catch (err) {
-      console.error("Model download failed:", err);
-      setStatusMessage("Download failed");
-      setError(err.message);
+Common parameters shared with OpenAI APIs (e.g., temperature, top_p) ensure compatibility.
 
-      await showToast(`Download failed: ${err.message}`, "long");
+Example:
 
-      // Clean up partial downloads
-      if (platform === "web") {
-        await deleteModelFromOPFS(modelFileName);
-      } else {
-        await deleteModelFromCapacitor();
-      }
+const messages = [
+    { role: "system", content: "You are a helpful assistant." },
+    { role: "user", content: "Explain WebLLM." },
+];
 
-      throw err;
-    }
-  };
+const response = await engine.chatCompletion({
+    messages,
+    top_p: 0.9,
+    temperature: 0.8,
+    max_tokens: 150,
+});
+ChatCompletionRequest¶
+Defines the structure for chat completion requests.
 
-  const loadModelFromStorage = async () => {
-    if (platform === "web") {
-      // Web platform uses OPFS
-      return await loadModelFromOPFS(modelFileName);
-    } else {
-      // Mobile platform uses Capacitor Filesystem
-      try {
-        if (!Filesystem) throw new Error("Filesystem not available");
+Base Interface: ChatCompletionRequestBase
+Contains parameters like messages, stream, frequency_penalty, and presence_penalty.
 
-        const result = await Filesystem.readFile({
-          path: modelFileName,
-          directory: Directory.Data,
-        });
+Variants:
+ChatCompletionRequestNonStreaming: For non-streaming completions.
 
-        // Convert base64 to ArrayBuffer
-        const binaryString = atob(result.data);
-        const bytes = new Uint8Array(binaryString.length);
-        for (let i = 0; i < binaryString.length; i++) {
-          bytes[i] = binaryString.charCodeAt(i);
-        }
-        return bytes.buffer;
-      } catch (err) {
-        console.error("Failed to load model:", err);
-        throw new Error(`Failed to load model: ${err.message}`);
-      }
-    }
-  };
+ChatCompletionRequestStreaming: For streaming completions.
 
-  return {
-    isModelLoaded,
-    statusMessage,
-    downloadProgress,
-    isLoading,
-    response,
-    error,
-    deviceInfo,
-    platform,
-    generateResponse,
-    redownloadModel,
-  };
-};
+Usage:
+Combines settings from GenerationConfig and ChatCompletionRequestBase to provide complete control over chat behavior.
 
-const isValidGGUF = async (modelData) => {
-  try {
-    // Implement validation logic for GGUF model data
-    // For example, check the integrity or format of the model data
-    // This is a placeholder logic, replace with actual validation
-    if (modelData && modelData.byteLength > 0) {
-      console.log("Model data is valid");
-      return true;
-    } else {
-      console.warn("Model data is invalid");
-      return false;
-    }
-  } catch (err) {
-    console.error("Validation failed:", err);
-    return false;
-  }
-};
+The stream parameter enables dynamic streaming responses, improving interactivity in conversational agents.
 
-const checkFileExistsInOPFS = async (filename) => {
-  try {
-    // Implement logic to check if the file exists in OPFS
-    // This is a placeholder logic, replace with actual file existence check
-    const fileHandle = await window.showDirectoryPicker();
-    for await (const entry of fileHandle.values()) {
-      if (entry.kind === "file" && entry.name === filename) {
-        console.log(`File ${filename} exists in OPFS`);
-        return true;
-      }
-    }
-    console.warn(`File ${filename} does not exist in OPFS`);
-    return false;
-  } catch (err) {
-    console.error("Failed to check file existence in OPFS:", err);
-    return false;
-  }
-};
+The logit_bias feature allows fine-tuning of token generation probabilities, providing a mechanism to restrict or encourage specific outputs.
 
-const saveModelToOPFS = async (filename, buffer) => {
-  try {
-    // Implement logic to save the buffer to OPFS using the filename
-    console.log(`Saving ${filename} to OPFS`);
-    // Placeholder logic for saving
-    const fileHandle = await window.showSaveFilePicker({
-      suggestedName: filename,
-    });
-    const writable = await fileHandle.createWritable();
-    await writable.write(buffer);
-    await writable.close();
-    console.log(`File ${filename} saved successfully to OPFS`);
-  } catch (err) {
-    console.error("Failed to save model to OPFS:", err);
-    throw new Error(`Failed to save model: ${err.message}`);
-  }
-};
+Example:
 
-const saveModelToCapacitor = async (buffer) => {
-  try {
-    if (!Filesystem) throw new Error("Filesystem not available");
+const response = await engine.chatCompletion({
+    messages: [
+        { role: "user", content: "Tell me about WebLLM." },
+    ],
+    stream: true,
+});
+Model Loading¶
+MLCEngine.reload(modelId: string | string[], chatOpts?: ChatOptions | ChatOptions[]): Promise<void>
 
-    const modelFileName = "tinymistral-248m.q2_k.gguf"; // Ensure modelFileName is defined
+Loads the specified model(s) into the engine. Uses MLCEngineConfig during initialization.
 
-    // Convert ArrayBuffer to base64
-    const binaryString = Array.from(new Uint8Array(buffer))
-      .map((byte) => String.fromCharCode(byte))
-      .join("");
-    const base64Data = btoa(binaryString);
+Parameters:
+modelId: Identifier(s) for the model(s) to load.
 
-    await Filesystem.writeFile({
-      path: modelFileName,
-      data: base64Data,
-      directory: Directory.Data,
-    });
+chatOpts: Configuration for generation (see GenerationConfig).
 
-    console.log(`File ${modelFileName} saved successfully to Capacitor`);
-  } catch (err) {
-    console.error("Failed to save model to Capacitor:", err);
-    throw new Error(`Failed to save model: ${err.message}`);
-  }
-};
+Example:
 
-const loadModelFromOPFS = async (filename) => {
-  try {
-    // Implement logic to load the file from OPFS using the filename
-    console.log(`Loading ${filename} from OPFS`);
-    // Placeholder logic for loading
-    const fileHandle = await window.showOpenFilePicker({
-      suggestedName: filename,
-    });
-    const file = await fileHandle[0].getFile();
-    const arrayBuffer = await file.arrayBuffer();
-    console.log(`File ${filename} loaded successfully from OPFS`);
-    return arrayBuffer;
-  } catch (err) {
-    console.error("Failed to load model from OPFS:", err);
-    throw new Error(`Failed to load model: ${err.message}`);
-  }
-};
+await engine.reload(["Llama-3.1-8B", "Gemma-2B"], [
+    { temperature: 0.7 },
+    { top_p: 0.9 },
+]);
+MLCEngine.unload(): Promise<void>
+
+Unloads all loaded models and clears their associated configurations.
+
+Example:
+
+await engine.unload();
+—
+
+Chat Completions¶
+MLCEngine.chat.completions.create(request: ChatCompletionRequest): Promise<ChatCompletion | AsyncIterable<ChatCompletionChunk>>
+
+Generates chat-based completions using a specified request configuration.
+
+Parameters: - request: A ChatCompletionRequest instance.
+
+Example:
+
+const response = await engine.chat.completions.create({
+    messages: [
+        { role: "system", content: "You are a helpful AI assistant." },
+        { role: "user", content: "What is WebLLM?" },
+    ],
+    temperature: 0.8,
+    stream: false,
+});
+—
+
+Utility Methods¶
+MLCEngine.getMessage(modelId?: string): Promise<string>
+
+Retrieves the current output message from the specified model.
+
+MLCEngine.resetChat(keepStats?: boolean, modelId?: string): Promise<void>
+
+Resets the chat history and optionally retains usage statistics.
+
+GPU Information¶
+The following methods provide detailed information about the GPU used for WebLLM computations.
+
+MLCEngine.getGPUVendor(): Promise<string>
+
+Retrieves the vendor name of the GPU used for computations. Useful for understanding the hardware capabilities during inference.
+
+Returns: A string indicating the GPU vendor (e.g., “Intel”, “NVIDIA”).
+
+Example:
+
+const gpuVendor = await engine.getGPUVendor();
+console.log(``GPU Vendor: ${gpuVendor}``);
+MLCEngine.getMaxStorageBufferBindingSize(): Promise<number>
+
+Returns the maximum storage buffer size supported by the GPU. This is important when working with larger models that require significant memory for processing.
+
+Returns: A number representing the maximum size in bytes.
+
+Example:
+
+const maxBufferSize = await engine.getMaxStorageBufferBindingSize();
+console.log(``Max Storage Buffer Binding Size: ${maxBufferSize}``);
+
+
+
