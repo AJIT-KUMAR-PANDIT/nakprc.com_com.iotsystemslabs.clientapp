@@ -1,4 +1,10 @@
-import React, { createContext, useContext, useState, useEffect, useRef } from "react";
+import React, {
+  createContext,
+  useContext,
+  useState,
+  useEffect,
+  useRef,
+} from "react";
 import * as webllm from "@mlc-ai/web-llm";
 
 // Create context
@@ -23,15 +29,17 @@ export const LLMProvider = ({ children }) => {
     try {
       setIsLoading(true);
       setStatusMessage("Initializing LLM...");
-      
-      // Create a new chat instance using the WebLLM class
-      const chat = new webllm.ChatModule();
+
+      // Fixed: Create a new chat instance using the proper constructor
+      // According to the error, ChatModule is not a constructor
+      // Use the proper ChatWorker constructor from webllm
+      const chat = new webllm.ChatWorker();
       setLLM(chat);
-      
+
       // Get platform info
       const platformInfo = await chat.detectPlatformInfo();
       setPlatform(platformInfo.backend || "unknown");
-      
+
       setIsLoading(false);
       setStatusMessage("LLM initialized");
       return chat;
@@ -49,19 +57,19 @@ export const LLMProvider = ({ children }) => {
     try {
       setIsCheckingModel(true);
       setStatusMessage("Checking model...");
-      
+
       if (!llm) {
         const chat = await initializeLLM();
         if (!chat) return false;
       }
-      
+
       // Use Llama-2-7b-chat-hf-q4f16_1 as the default model
       const modelName = "Llama-2-7b-chat-hf-q4f16_1";
-      
+
       try {
         // Try to get model info
         const modelInfo = await llm.getModelInfo(modelName);
-        
+
         if (modelInfo) {
           setModelSize(modelInfo.model_size || 0);
           setIsModelLoaded(true);
@@ -95,21 +103,21 @@ export const LLMProvider = ({ children }) => {
       setIsDownloading(true);
       setError(null);
       setStatusMessage("Starting download...");
-      
+
       if (!llm) {
         await initializeLLM();
       }
-      
+
       // Use Llama-2-7b-chat-hf-q4f16_1 as the default model
       const modelName = "Llama-2-7b-chat-hf-q4f16_1";
-      
+
       await llm.loadModel(modelName, {
         progress: (progress) => {
           setDownloadProgress(progress * 100);
           setStatusMessage(`Downloading: ${Math.round(progress * 100)}%`);
-        }
+        },
       });
-      
+
       setIsModelLoaded(true);
       setStatusMessage("Model loaded successfully");
       return true;
@@ -141,35 +149,35 @@ export const LLMProvider = ({ children }) => {
 
     try {
       setIsLoading(true);
-      
+
       // Create abort controller
       const controller = new AbortController();
       abortControllerRef.current = controller;
-      
+
       console.log("Sending prompt to LLM:", prompt);
-      
+
       // Use chat method
       const response = await llm.chat({
         messages: [{ role: "user", content: prompt }],
         temperature: 0.7,
         max_tokens: 1000,
-        signal: controller.signal
+        signal: controller.signal,
       });
-      
+
       console.log("LLM response:", response);
-      
+
       if (!response || !response.content) {
         console.warn("Empty response from LLM");
         return null;
       }
-      
+
       return response.content;
     } catch (error) {
       if (error.name === "AbortError") {
         console.log("LLM generation was aborted");
         return null;
       }
-      
+
       console.error("Error generating response:", error);
       setError(error.message);
       return null;
@@ -190,37 +198,41 @@ export const LLMProvider = ({ children }) => {
           await downloadModel();
         }
       }
-      
+
       // Retry logic for generating responses
       let response = null;
       let retryCount = 0;
       const maxRetries = 3;
-      
+
       while (!response && retryCount < maxRetries) {
         try {
-          console.log(`Attempt ${retryCount + 1}/${maxRetries} to generate response`);
+          console.log(
+            `Attempt ${retryCount + 1}/${maxRetries} to generate response`
+          );
           response = await generateResponse(userQuery);
-          
+
           if (!response) {
-            console.warn(`Attempt ${retryCount + 1}: Received null response from LLM`);
+            console.warn(
+              `Attempt ${retryCount + 1}: Received null response from LLM`
+            );
             retryCount++;
-            
+
             if (retryCount < maxRetries) {
               // Wait before retrying
-              await new Promise(resolve => setTimeout(resolve, 1000));
+              await new Promise((resolve) => setTimeout(resolve, 1000));
             }
           }
         } catch (error) {
           console.error(`Error in attempt ${retryCount + 1}:`, error);
           retryCount++;
-          
+
           if (retryCount < maxRetries) {
             // Wait before retrying
-            await new Promise(resolve => setTimeout(resolve, 1000));
+            await new Promise((resolve) => setTimeout(resolve, 1000));
           }
         }
       }
-      
+
       return response;
     } catch (error) {
       console.error("Error in queryToLLM:", error);
@@ -243,7 +255,7 @@ export const LLMProvider = ({ children }) => {
     initializeLLM().then(() => {
       checkModelExists();
     });
-    
+
     // Cleanup on unmount
     return () => {
       if (abortControllerRef.current) {
@@ -273,13 +285,11 @@ export const LLMProvider = ({ children }) => {
     cancelDownload,
     generateResponse,
     queryToLLM,
-    stopGeneration
+    stopGeneration,
   };
 
   return (
-    <LLMContext.Provider value={contextValue}>
-      {children}
-    </LLMContext.Provider>
+    <LLMContext.Provider value={contextValue}>{children}</LLMContext.Provider>
   );
 };
 
