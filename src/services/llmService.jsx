@@ -89,47 +89,52 @@ export const useLLM = () => {
     detectPlatform();
   }, []);
 
-  const initializeModel = async (buffer) => {
-    if (!buffer) throw new Error("Empty model buffer");
+  const initializeModel = useCallback(
+    async (buffer) => {
+      if (!buffer) throw new Error("Empty model buffer");
 
-    if (llmInstance.current) {
-      try {
-        llmInstance.current.dispose();
-        llmInstance.current = null;
-      } catch (e) {
-        console.warn("Disposing LLM failed:", e);
+      if (llmInstance.current) {
+        try {
+          llmInstance.current.dispose();
+          llmInstance.current = null;
+        } catch (e) {
+          console.warn("Disposing LLM failed:", e);
+        }
       }
-    }
 
-    return new Promise((resolve, reject) => {
-      try {
-        const deviceType = "GGUF_CPU";
-        setStatusMessage(`Initializing model...`);
+      return new Promise((resolve, reject) => {
+        try {
+          const deviceType = "GGUF_CPU";
+          setStatusMessage(`Initializing model...`);
 
-        const onProgress = (progress) => {
-          setStatusMessage(
-            `Initializing model... ${Math.round(progress * 100)}%`
+          const onProgress = (progress) => {
+            setStatusMessage(
+              `Initializing model... ${Math.round(progress * 100)}%`
+            );
+          };
+
+          const llm = new LLM(
+            deviceType,
+            buffer,
+            () => {
+              llmInstance.current = llm;
+              setIsModelLoaded(true);
+              setStatusMessage("Model ready");
+              resolve();
+            },
+            (text) => setResponse((prev) => prev + text),
+            onProgress
           );
-        };
+        } catch (e) {
+          console.error("LLM initialization error:", e);
+          reject(new Error(`Model initialization failed: ${e.message}`));
+        }
+      });
+    },
+    [setStatusMessage, setResponse, setIsModelLoaded]
+  );
 
-        const llm = new LLM(
-          deviceType,
-          buffer,
-          () => {
-            llmInstance.current = llm;
-            resolve();
-          },
-          (text) => setResponse((prev) => prev + text),
-          onProgress
-        );
-      } catch (e) {
-        console.error("LLM initialization error:", e);
-        reject(new Error(`Model initialization failed: ${e.message}`));
-      }
-    });
-  };
-
-  const downloadModel = async () => {
+  const downloadModel = useCallback(async () => {
     if (isDownloading || isModelStored) return;
 
     abortController.current = new AbortController();
@@ -218,7 +223,19 @@ export const useLLM = () => {
     } finally {
       setIsDownloading(false);
     }
-  };
+  }, [
+    isDownloading,
+    isModelStored,
+    platform,
+    setIsDownloading,
+    setStatusMessage,
+    setDownloadProgress,
+    setError,
+    setModelSize,
+    saveModelToIndexedDB,
+    saveModelToCapacitor,
+    showToast,
+  ]);
 
   const cancelDownload = () => {
     if (isDownloading && abortController.current) {
@@ -228,7 +245,7 @@ export const useLLM = () => {
     }
   };
 
-  const loadModelFromStorage = async () => {
+  const loadModelFromStorage = useCallback(async () => {
     if (platform === "web") {
       try {
         const buffer = await getModelFromIndexedDB(MODEL_CONFIG.filename);
@@ -265,7 +282,7 @@ export const useLLM = () => {
     } else {
       throw new Error("No storage mechanism available");
     }
-  };
+  }, [platform]);
 
   const modelFileExists = useCallback(async () => {
     if (platform === "web") {
@@ -311,7 +328,6 @@ export const useLLM = () => {
 
         if (modelData && (await isValidGGUF(modelData))) {
           await initializeModel(modelData);
-          setIsModelLoaded(true);
           setStatusMessage("Model ready");
           await showToast("Model loaded successfully");
         } else {
@@ -327,7 +343,6 @@ export const useLLM = () => {
           const newModelBuffer = await downloadModel();
           if (newModelBuffer) {
             await initializeModel(newModelBuffer);
-            setIsModelLoaded(true);
             setStatusMessage("Model ready");
             await showToast("Model loaded successfully");
           }
@@ -337,7 +352,6 @@ export const useLLM = () => {
         const modelBuffer = await downloadModel();
         if (modelBuffer) {
           await initializeModel(modelBuffer);
-          setIsModelLoaded(true);
           setStatusMessage("Model ready");
           await showToast("Model loaded successfully");
         }
@@ -462,7 +476,6 @@ export const useLLM = () => {
       const modelBuffer = await downloadModel();
       if (modelBuffer) {
         await initializeModel(modelBuffer);
-        setIsModelLoaded(true);
         setStatusMessage("Model ready");
         await showToast("Model redownloaded and initialized");
         return true;
