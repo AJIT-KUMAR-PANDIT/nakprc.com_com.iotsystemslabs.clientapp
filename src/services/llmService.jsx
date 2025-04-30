@@ -10,7 +10,6 @@ import * as webllm from "@mlc-ai/web-llm";
 // Create context
 const LLMContext = createContext();
 
-// Provider component
 export const LLMProvider = ({ children }) => {
   const [llm, setLLM] = useState(null);
   const [isModelLoaded, setIsModelLoaded] = useState(false);
@@ -24,64 +23,111 @@ export const LLMProvider = ({ children }) => {
   const [platform, setPlatform] = useState("");
   const abortControllerRef = useRef(null);
 
+  const modelName = "RedPajama-INCITE-Chat-3B-v1-q4f32_1"; // Using the supported model from test.txt
+
+  // Log the webllm object to inspect its structure
+  useEffect(() => {
+    console.log("webllm:", webllm);
+  }, []);
+
   // Initialize LLM
   const initializeLLM = async () => {
     try {
       setIsLoading(true);
       setStatusMessage("Initializing LLM...");
 
-      // Fixed: Create a new chat instance using the proper constructor
-      // According to the error, ChatModule is not a constructor
-      // Use the proper ChatWorker constructor from webllm
-      const chat = new webllm.ChatWorker();
+      // Check if webllm is available
+      if (!webllm) {
+        throw new Error("WebLLM library not found");
+      }
+
+      // Log the webllm module for inspection
+      console.log("webllm module keys:", Object.keys(webllm));
+      console.log("webllm module:", webllm);
+
+      // Try ChatModule, fallback to Chat if not present
+      let ChatClass = webllm.ChatModule || webllm.Chat;
+      if (!ChatClass) {
+        throw new Error("No ChatModule or Chat class is defined in webllm");
+      }
+
+      // Properly instantiate the chat object
+      const chat = new ChatClass();
+      // Log the chat instance for inspection
+      console.log("chat instance:", chat);
+      console.log("chat instance prototype methods:", Object.getOwnPropertyNames(Object.getPrototypeOf(chat)));
+
       setLLM(chat);
 
-      // Get platform info
-      const platformInfo = await chat.detectPlatformInfo();
-      setPlatform(platformInfo.backend || "unknown");
+      // Get platform info if method exists
+      if (typeof chat.getPlatformInfo === "function") {
+        try {
+          const platformInfo = await chat.getPlatformInfo();
+          setPlatform(platformInfo.backend || "unknown");
+        } catch (e) {
+          console.warn("Could not get platform info:", e);
+          setPlatform("unknown");
+        }
+      } else {
+        setPlatform("unknown");
+      }
 
-      setIsLoading(false);
       setStatusMessage("LLM initialized");
       return chat;
     } catch (error) {
       console.error("Error initializing LLM:", error);
       setError(error.message);
-      setIsLoading(false);
       setStatusMessage("Initialization failed");
       return null;
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  // Check if model exists
+  // Check if model exists - FIXED function
   const checkModelExists = async () => {
     try {
       setIsCheckingModel(true);
       setStatusMessage("Checking model...");
 
-      if (!llm) {
-        const chat = await initializeLLM();
-        if (!chat) return false;
+      // Make sure LLM is initialized
+      let chatInstance = llm;
+      if (!chatInstance) {
+        chatInstance = await initializeLLM();
+        if (!chatInstance) return false;
       }
 
-      // Use Llama-2-7b-chat-hf-q4f16_1 as the default model
-      const modelName = "Llama-2-7b-chat-hf-q4f16_1";
-
+      // Check if the model is loaded by trying a simple operation
+      // This is safer than relying on getModelInfo which may not exist
       try {
-        // Try to get model info
-        const modelInfo = await llm.getModelInfo(modelName);
-
-        if (modelInfo) {
-          setModelSize(modelInfo.model_size || 0);
-          setIsModelLoaded(true);
-          setStatusMessage("Model loaded");
-          return true;
-        } else {
-          setIsModelLoaded(false);
-          setStatusMessage("Model not found");
-          return false;
+        // First check if getModelInfo exists and try to use it
+        if (typeof chatInstance.getModelInfo === "function") {
+          const modelInfo = await chatInstance.getModelInfo(modelName);
+          if (modelInfo) {
+            setModelSize(modelInfo.model_size || 0);
+            setIsModelLoaded(true);
+            setStatusMessage("Model loaded");
+            return true;
+          }
         }
+
+        // Alternative check: If the model is loaded, 'isReady' might be true
+        // or we can check if the model's name is in the list of loaded models
+        if (typeof chatInstance.listModels === "function") {
+          const models = await chatInstance.listModels();
+          if (models && models.includes(modelName)) {
+            setIsModelLoaded(true);
+            setStatusMessage("Model loaded");
+            return true;
+          }
+        }
+
+        // If we reach here, the model is likely not loaded
+        setIsModelLoaded(false);
+        setStatusMessage("Model not found");
+        return false;
       } catch (e) {
-        console.log("Model not loaded yet:", e);
+        console.log("Model checking error:", e);
         setIsModelLoaded(false);
         setStatusMessage("Model not found");
         return false;
@@ -102,27 +148,46 @@ export const LLMProvider = ({ children }) => {
     try {
       setIsDownloading(true);
       setError(null);
-      setStatusMessage("Starting download...");
+      setStatusMessage("Starting model download...");
 
-      if (!llm) {
-        await initializeLLM();
+      let chatInstance = llm;
+      if (!chatInstance) {
+        chatInstance = await initializeLLM();
+        if (!chatInstance) return false;
       }
 
-      // Use Llama-2-7b-chat-hf-q4f16_1 as the default model
-      const modelName = "Llama-2-7b-chat-hf-q4f16_1";
-
-      await llm.loadModel(modelName, {
-        progress: (progress) => {
+      // Use the appropriate method depending on the API
+      if (typeof chatInstance.loadModel === "function") {
+        // API from test.txt
+        await chatInstance.loadModel(modelName, {
+          model_id: modelName,
+          progress_callback: (progress) => {
+            setDownloadProgress(progress * 100);
+            setStatusMessage(`Downloading: ${Math.round(progress * 100)}%`);
+          },
+        });
+      } else if (typeof chatInstance.reload === "function") {
+        // Alternative API
+        await chatInstance.reload(modelName, (progress) => {
           setDownloadProgress(progress * 100);
           setStatusMessage(`Downloading: ${Math.round(progress * 100)}%`);
-        },
-      });
+        });
+      } else {
+        // Add this debug log to inspect available methods
+        console.error("llm instance methods:", Object.getOwnPropertyNames(Object.getPrototypeOf(chatInstance)));
+        throw new Error("No suitable method found to load the model");
+      }
 
-      setIsModelLoaded(true);
+      // Verify model was successfully loaded
+      const isLoaded = await checkModelExists();
+      if (!isLoaded) {
+        throw new Error("Model failed to load properly");
+      }
+
       setStatusMessage("Model loaded successfully");
       return true;
     } catch (error) {
-      console.error("Error downloading model:", error);
+      console.error("Download failed:", error);
       setError(error.message);
       setStatusMessage("Download failed");
       return false;
@@ -134,7 +199,12 @@ export const LLMProvider = ({ children }) => {
   // Cancel download
   const cancelDownload = () => {
     if (llm) {
-      llm.unload();
+      if (typeof llm.unload === "function") {
+        llm.unload();
+      } else if (typeof llm.terminate === "function") {
+        llm.terminate();
+      }
+
       setIsDownloading(false);
       setStatusMessage("Download canceled");
     }
@@ -156,22 +226,49 @@ export const LLMProvider = ({ children }) => {
 
       console.log("Sending prompt to LLM:", prompt);
 
-      // Use chat method
-      const response = await llm.chat({
-        messages: [{ role: "user", content: prompt }],
-        temperature: 0.7,
-        max_tokens: 1000,
-        signal: controller.signal,
-      });
+      // Check which method is available and use it
+      let response;
+      if (typeof llm.chatCompletion === "function") {
+        // Method from test.txt
+        response = await llm.chatCompletion({
+          messages: [{ role: "user", content: prompt }],
+          temperature: 0.7,
+          max_tokens: 1000,
+          stream: false,
+          signal: controller.signal,
+        });
+      } else if (typeof llm.generate === "function") {
+        // Alternative API
+        response = await llm.generate(prompt, {
+          temperature: 0.7,
+          max_tokens: 1000,
+          signal: controller.signal,
+        });
+      } else {
+        throw new Error("No suitable method found to generate response");
+      }
 
       console.log("LLM response:", response);
 
-      if (!response || !response.content) {
+      // Handle different response formats
+      let responseContent = null;
+      if (response.choices?.[0]?.message?.content) {
+        // Format from test.txt
+        responseContent = response.choices[0].message.content;
+      } else if (response.content) {
+        // Alternative format
+        responseContent = response.content;
+      } else if (typeof response === "string") {
+        // Simple string response
+        responseContent = response;
+      }
+
+      if (!responseContent) {
         console.warn("Empty response from LLM");
         return null;
       }
 
-      return response.content;
+      return responseContent;
     } catch (error) {
       if (error.name === "AbortError") {
         console.log("LLM generation was aborted");
@@ -192,42 +289,29 @@ export const LLMProvider = ({ children }) => {
     try {
       // Check if model is loaded
       if (!isModelLoaded) {
-        const modelExists = await checkModelExists();
-        if (!modelExists) {
-          console.log("Model not loaded, attempting to download...");
-          await downloadModel();
+        const isAvailable = await checkModelExists();
+        if (!isAvailable) {
+          const downloaded = await downloadModel();
+          if (!downloaded) return null;
         }
       }
 
       // Retry logic for generating responses
       let response = null;
-      let retryCount = 0;
       const maxRetries = 3;
 
-      while (!response && retryCount < maxRetries) {
+      for (let i = 0; i < maxRetries && !response; i++) {
         try {
-          console.log(
-            `Attempt ${retryCount + 1}/${maxRetries} to generate response`
-          );
+          console.log(`Attempt ${i + 1}/${maxRetries} to generate response`);
           response = await generateResponse(userQuery);
 
-          if (!response) {
-            console.warn(
-              `Attempt ${retryCount + 1}: Received null response from LLM`
-            );
-            retryCount++;
-
-            if (retryCount < maxRetries) {
-              // Wait before retrying
-              await new Promise((resolve) => setTimeout(resolve, 1000));
-            }
+          if (!response && i < maxRetries - 1) {
+            console.warn(`Retry ${i + 1}/${maxRetries}`);
+            await new Promise((resolve) => setTimeout(resolve, 1000));
           }
         } catch (error) {
-          console.error(`Error in attempt ${retryCount + 1}:`, error);
-          retryCount++;
-
-          if (retryCount < maxRetries) {
-            // Wait before retrying
+          console.error(`Error in attempt ${i + 1}:`, error);
+          if (i < maxRetries - 1) {
             await new Promise((resolve) => setTimeout(resolve, 1000));
           }
         }
@@ -252,9 +336,15 @@ export const LLMProvider = ({ children }) => {
 
   // Initialize LLM on component mount
   useEffect(() => {
-    initializeLLM().then(() => {
-      checkModelExists();
-    });
+    const init = async () => {
+      const chat = await initializeLLM();
+      if (chat) {
+        // Check if model is already available
+        await checkModelExists();
+      }
+    };
+
+    init();
 
     // Cleanup on unmount
     return () => {
@@ -262,7 +352,11 @@ export const LLMProvider = ({ children }) => {
         abortControllerRef.current.abort();
       }
       if (llm) {
-        llm.unload();
+        if (typeof llm.unload === "function") {
+          llm.unload();
+        } else if (typeof llm.terminate === "function") {
+          llm.terminate();
+        }
       }
     };
   }, []);
