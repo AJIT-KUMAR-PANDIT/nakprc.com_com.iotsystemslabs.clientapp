@@ -1,5 +1,3 @@
-// src/registerServiceWorker.js
-
 // Register the service worker
 export async function registerServiceWorker() {
   if ("serviceWorker" in navigator) {

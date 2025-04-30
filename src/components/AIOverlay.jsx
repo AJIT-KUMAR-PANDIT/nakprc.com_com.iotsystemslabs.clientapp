@@ -579,6 +579,7 @@ const AIOverlay = ({ isOpen, onClose }) => {
   };
 
   // Model status UI with enhanced animations
+  // Model status UI with enhanced animations
   const renderModelStatus = () => {
     if (isDownloading) {
       return (

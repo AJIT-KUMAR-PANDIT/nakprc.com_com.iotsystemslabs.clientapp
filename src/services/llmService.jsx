@@ -31,61 +31,126 @@ export const LLMProvider = ({ children }) => {
   }, []);
 
   // Initialize LLM
+  // Initialize LLM
+  // Initialize LLM
   const initializeLLM = async () => {
     try {
       setIsLoading(true);
       setStatusMessage("Initializing LLM...");
 
-      // Create engine with proper error handling
+      // Check if WebLLM is properly loaded
+      if (!webllm) {
+        throw new Error("webllm library not loaded properly");
+      }
+
+      console.log("Available webllm methods:", Object.keys(webllm));
+
+      // APPROACH 1: Try with ChatModule first (most reliable)
       let engine = null;
 
-      // Try each engine creation method with proper error handling
-      if (webllm.CreateWebLLM) {
-        // Try the newer API if available
+      if (webllm.ChatModule) {
         try {
-          console.log("Attempting to create WebLLM engine");
-          engine = await webllm.CreateWebLLM();
-          console.log("WebLLM engine created successfully");
+          console.log("Attempting to create ChatModule");
+          const chat = new webllm.ChatModule({
+            model: modelName,
+            // Explicitly disable service workers
+            useServiceWorker: false,
+          });
+          console.log("ChatModule created successfully");
+          setLLM(chat);
+          setStatusMessage("LLM initialized with ChatModule");
+          return chat;
         } catch (e) {
-          console.warn("WebLLM engine creation failed:", e);
+          console.warn("ChatModule creation failed:", e);
         }
       }
 
-      if (!engine && webllm.CreateWebWorkerMLCEngine) {
+      // APPROACH 2: Try direct MLCEngine creation
+      if (!engine && webllm.MLCEngine) {
+        try {
+          console.log("Attempting to create MLCEngine directly");
+          engine = new webllm.MLCEngine();
+          console.log("Direct MLCEngine created successfully");
+        } catch (e) {
+          console.warn("Direct MLCEngine failed:", e);
+        }
+      }
+
+      // APPROACH 3: Try function-based creation (newer API)
+      if (!engine && typeof webllm.CreateMLCEngine === "function") {
+        try {
+          console.log("Attempting to create MLCEngine via CreateMLCEngine()");
+          engine = await webllm.CreateMLCEngine();
+          console.log("Function-based MLCEngine created successfully");
+        } catch (e) {
+          console.warn("Function-based MLCEngine failed:", e);
+        }
+      }
+
+      // APPROACH 4: Try web worker but with explicit options
+      if (
+        !engine &&
+        (webllm.WebWorkerMLCEngine ||
+          typeof webllm.CreateWebWorkerMLCEngine === "function")
+      ) {
         try {
           console.log("Attempting to create WebWorkerMLCEngine");
-          engine = await webllm.CreateWebWorkerMLCEngine();
+
+          // First check if there's a constructor
+          if (webllm.WebWorkerMLCEngine) {
+            engine = new webllm.WebWorkerMLCEngine({
+              // Provide explicit worker URL if needed
+              workerUrl: new URL("./llm-worker.js", window.location.origin)
+                .href,
+              // Low thread count to avoid overloading
+              nthread: 1,
+            });
+          }
+          // Otherwise use function creation
+          else if (typeof webllm.CreateWebWorkerMLCEngine === "function") {
+            engine = await webllm.CreateWebWorkerMLCEngine({
+              // Provide explicit worker URL if needed
+              workerUrl: new URL("./llm-worker.js", window.location.origin)
+                .href,
+              // Low thread count to avoid overloading
+              nthread: 1,
+            });
+          }
+
           console.log("WebWorkerMLCEngine created successfully");
         } catch (e) {
           console.warn("WebWorkerMLCEngine failed:", e);
-        }
-      }
-
-      if (!engine && webllm.CreateServiceWorkerMLCEngine) {
-        try {
-          console.log("Attempting to create ServiceWorkerMLCEngine");
-          engine = await webllm.CreateServiceWorkerMLCEngine();
-          console.log("ServiceWorkerMLCEngine created successfully");
-        } catch (e) {
-          console.warn("ServiceWorkerMLCEngine failed:", e);
-        }
-      }
-
-      if (!engine && webllm.CreateMLCEngine) {
-        try {
-          console.log("Attempting to create MLCEngine");
-          engine = await webllm.CreateMLCEngine();
-          console.log("MLCEngine created successfully");
-        } catch (e) {
-          console.warn("MLCEngine failed:", e);
+          // More detailed logging for WebWorker errors
+          console.error("WebWorker Error Details:", {
+            message: e.message,
+            stack: e.stack,
+            cause: e.cause,
+          });
         }
       }
 
       if (!engine) {
+        // Fall back to simplified API from newer versions
+        if (typeof webllm.create === "function") {
+          try {
+            console.log("Attempting simplified 'create' API");
+            const instance = await webllm.create({
+              model: modelName,
+              useWebWorker: true,
+              useServiceWorker: false,
+            });
+            setLLM(instance);
+            setStatusMessage("LLM initialized with simplified API");
+            return instance;
+          } catch (e) {
+            console.warn("Simplified API creation failed:", e);
+          }
+        }
+
         throw new Error("No suitable MLCEngine could be created");
       }
 
-      // Create chat instance based on available API
+      // Create chat instance if engine was successfully created
       let chat;
       if (webllm.Chat && typeof webllm.Chat === "function") {
         chat = new webllm.Chat(engine);
@@ -95,20 +160,6 @@ export const LLMProvider = ({ children }) => {
       }
 
       setLLM(chat);
-
-      // Get platform info if available
-      if (typeof chat.getPlatformInfo === "function") {
-        try {
-          const platformInfo = await chat.getPlatformInfo();
-          setPlatform(platformInfo.backend || "unknown");
-        } catch (e) {
-          console.warn("Failed to get platform info:", e);
-          setPlatform("unknown");
-        }
-      } else {
-        setPlatform("unknown");
-      }
-
       setStatusMessage("LLM initialized");
       return chat;
     } catch (error) {
@@ -192,6 +243,7 @@ export const LLMProvider = ({ children }) => {
     }
   };
 
+  // Download model
   // Download model
   const downloadModel = async () => {
     try {

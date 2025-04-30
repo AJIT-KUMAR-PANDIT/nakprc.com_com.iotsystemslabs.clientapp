@@ -1,5 +1,3 @@
-// public/service-worker.js
-
 // Create the mlc object that WebLLM expects
 self.mlc = {};
 

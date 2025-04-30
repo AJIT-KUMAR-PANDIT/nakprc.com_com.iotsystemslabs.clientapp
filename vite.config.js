@@ -3,6 +3,12 @@ import react from "@vitejs/plugin-react-swc";
 import tailwindcss from "@tailwindcss/vite";
 import { resolve } from "path";
 import fs from "fs";
+import { fileURLToPath } from "url";
+import { dirname, resolve } from "path";
+import fs from "fs";
+
+// Polyfill __dirname for ESM
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // Custom plugin to handle service worker
 const serviceWorkerPlugin = () => {
