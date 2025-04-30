@@ -36,36 +36,73 @@ export const LLMProvider = ({ children }) => {
       setIsLoading(true);
       setStatusMessage("Initializing LLM...");
 
-      // Check if webllm is available
-      if (!webllm) {
-        throw new Error("WebLLM library not found");
+      // Create engine with proper error handling
+      let engine = null;
+
+      // Try each engine creation method with proper error handling
+      if (webllm.CreateWebLLM) {
+        // Try the newer API if available
+        try {
+          console.log("Attempting to create WebLLM engine");
+          engine = await webllm.CreateWebLLM();
+          console.log("WebLLM engine created successfully");
+        } catch (e) {
+          console.warn("WebLLM engine creation failed:", e);
+        }
       }
 
-      // Log the webllm module for inspection
-      console.log("webllm module keys:", Object.keys(webllm));
-      console.log("webllm module:", webllm);
-
-      // Try ChatModule, fallback to Chat if not present
-      let ChatClass = webllm.ChatModule || webllm.Chat;
-      if (!ChatClass) {
-        throw new Error("No ChatModule or Chat class is defined in webllm");
+      if (!engine && webllm.CreateWebWorkerMLCEngine) {
+        try {
+          console.log("Attempting to create WebWorkerMLCEngine");
+          engine = await webllm.CreateWebWorkerMLCEngine();
+          console.log("WebWorkerMLCEngine created successfully");
+        } catch (e) {
+          console.warn("WebWorkerMLCEngine failed:", e);
+        }
       }
 
-      // Properly instantiate the chat object
-      const chat = new ChatClass();
-      // Log the chat instance for inspection
-      console.log("chat instance:", chat);
-      console.log("chat instance prototype methods:", Object.getOwnPropertyNames(Object.getPrototypeOf(chat)));
+      if (!engine && webllm.CreateServiceWorkerMLCEngine) {
+        try {
+          console.log("Attempting to create ServiceWorkerMLCEngine");
+          engine = await webllm.CreateServiceWorkerMLCEngine();
+          console.log("ServiceWorkerMLCEngine created successfully");
+        } catch (e) {
+          console.warn("ServiceWorkerMLCEngine failed:", e);
+        }
+      }
+
+      if (!engine && webllm.CreateMLCEngine) {
+        try {
+          console.log("Attempting to create MLCEngine");
+          engine = await webllm.CreateMLCEngine();
+          console.log("MLCEngine created successfully");
+        } catch (e) {
+          console.warn("MLCEngine failed:", e);
+        }
+      }
+
+      if (!engine) {
+        throw new Error("No suitable MLCEngine could be created");
+      }
+
+      // Create chat instance based on available API
+      let chat;
+      if (webllm.Chat && typeof webllm.Chat === "function") {
+        chat = new webllm.Chat(engine);
+      } else {
+        // If Chat class doesn't exist, use the engine directly
+        chat = engine;
+      }
 
       setLLM(chat);
 
-      // Get platform info if method exists
+      // Get platform info if available
       if (typeof chat.getPlatformInfo === "function") {
         try {
           const platformInfo = await chat.getPlatformInfo();
           setPlatform(platformInfo.backend || "unknown");
         } catch (e) {
-          console.warn("Could not get platform info:", e);
+          console.warn("Failed to get platform info:", e);
           setPlatform("unknown");
         }
       } else {
@@ -84,7 +121,7 @@ export const LLMProvider = ({ children }) => {
     }
   };
 
-  // Check if model exists - FIXED function
+  // Check if model exists
   const checkModelExists = async () => {
     try {
       setIsCheckingModel(true);
@@ -97,37 +134,49 @@ export const LLMProvider = ({ children }) => {
         if (!chatInstance) return false;
       }
 
-      // Check if the model is loaded by trying a simple operation
-      // This is safer than relying on getModelInfo which may not exist
+      // Check if the model is loaded using multiple approaches
       try {
-        // First check if getModelInfo exists and try to use it
+        // Try different methods to check if model is loaded
         if (typeof chatInstance.getModelInfo === "function") {
-          const modelInfo = await chatInstance.getModelInfo(modelName);
-          if (modelInfo) {
-            setModelSize(modelInfo.model_size || 0);
-            setIsModelLoaded(true);
-            setStatusMessage("Model loaded");
-            return true;
+          try {
+            const modelInfo = await chatInstance.getModelInfo(modelName);
+            if (modelInfo) {
+              setModelSize(modelInfo.model_size || 0);
+              setIsModelLoaded(true);
+              setStatusMessage("Model loaded");
+              return true;
+            }
+          } catch (e) {
+            console.warn("getModelInfo failed:", e);
           }
         }
 
-        // Alternative check: If the model is loaded, 'isReady' might be true
-        // or we can check if the model's name is in the list of loaded models
         if (typeof chatInstance.listModels === "function") {
-          const models = await chatInstance.listModels();
-          if (models && models.includes(modelName)) {
-            setIsModelLoaded(true);
-            setStatusMessage("Model loaded");
-            return true;
+          try {
+            const models = await chatInstance.listModels();
+            if (models && models.includes(modelName)) {
+              setIsModelLoaded(true);
+              setStatusMessage("Model loaded");
+              return true;
+            }
+          } catch (e) {
+            console.warn("listModels failed:", e);
           }
         }
 
-        // If we reach here, the model is likely not loaded
+        // Check for isReady property
+        if (chatInstance.isReady === true) {
+          setIsModelLoaded(true);
+          setStatusMessage("Model ready");
+          return true;
+        }
+
+        // If none of the checks passed, model is not loaded
         setIsModelLoaded(false);
         setStatusMessage("Model not found");
         return false;
       } catch (e) {
-        console.log("Model checking error:", e);
+        console.error("Model checking error:", e);
         setIsModelLoaded(false);
         setStatusMessage("Model not found");
         return false;
@@ -156,25 +205,34 @@ export const LLMProvider = ({ children }) => {
         if (!chatInstance) return false;
       }
 
+      // Log available methods for debugging
+      console.log(
+        "Available methods:",
+        Object.getOwnPropertyNames(Object.getPrototypeOf(chatInstance))
+      );
+
       // Use the appropriate method depending on the API
       if (typeof chatInstance.loadModel === "function") {
-        // API from test.txt
+        console.log("Using loadModel method");
         await chatInstance.loadModel(modelName, {
-          model_id: modelName,
           progress_callback: (progress) => {
             setDownloadProgress(progress * 100);
             setStatusMessage(`Downloading: ${Math.round(progress * 100)}%`);
           },
         });
       } else if (typeof chatInstance.reload === "function") {
-        // Alternative API
+        console.log("Using reload method");
         await chatInstance.reload(modelName, (progress) => {
           setDownloadProgress(progress * 100);
           setStatusMessage(`Downloading: ${Math.round(progress * 100)}%`);
         });
+      } else if (typeof chatInstance.load === "function") {
+        console.log("Using load method");
+        await chatInstance.load(modelName, (progress) => {
+          setDownloadProgress(progress * 100);
+          setStatusMessage(`Downloading: ${Math.round(progress * 100)}%`);
+        });
       } else {
-        // Add this debug log to inspect available methods
-        console.error("llm instance methods:", Object.getOwnPropertyNames(Object.getPrototypeOf(chatInstance)));
         throw new Error("No suitable method found to load the model");
       }
 
@@ -225,11 +283,15 @@ export const LLMProvider = ({ children }) => {
       abortControllerRef.current = controller;
 
       console.log("Sending prompt to LLM:", prompt);
+      console.log(
+        "Available methods for generation:",
+        Object.getOwnPropertyNames(Object.getPrototypeOf(llm))
+      );
 
       // Check which method is available and use it
       let response;
       if (typeof llm.chatCompletion === "function") {
-        // Method from test.txt
+        console.log("Using chatCompletion method");
         response = await llm.chatCompletion({
           messages: [{ role: "user", content: prompt }],
           temperature: 0.7,
@@ -238,8 +300,15 @@ export const LLMProvider = ({ children }) => {
           signal: controller.signal,
         });
       } else if (typeof llm.generate === "function") {
-        // Alternative API
+        console.log("Using generate method");
         response = await llm.generate(prompt, {
+          temperature: 0.7,
+          max_tokens: 1000,
+          signal: controller.signal,
+        });
+      } else if (typeof llm.chat === "function") {
+        console.log("Using chat method");
+        response = await llm.chat(prompt, {
           temperature: 0.7,
           max_tokens: 1000,
           signal: controller.signal,
@@ -252,19 +321,25 @@ export const LLMProvider = ({ children }) => {
 
       // Handle different response formats
       let responseContent = null;
-      if (response.choices?.[0]?.message?.content) {
+      if (response?.choices?.[0]?.message?.content) {
         // Format from test.txt
         responseContent = response.choices[0].message.content;
-      } else if (response.content) {
+      } else if (response?.content) {
         // Alternative format
         responseContent = response.content;
       } else if (typeof response === "string") {
         // Simple string response
         responseContent = response;
+      } else if (response?.text) {
+        // Another possible format
+        responseContent = response.text;
+      } else if (Array.isArray(response) && response[0]?.content) {
+        // Array response format
+        responseContent = response[0].content;
       }
 
       if (!responseContent) {
-        console.warn("Empty response from LLM");
+        console.warn("Empty response from LLM", response);
         return null;
       }
 

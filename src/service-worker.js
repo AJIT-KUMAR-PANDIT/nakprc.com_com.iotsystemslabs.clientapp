@@ -6,11 +6,11 @@ export async function registerServiceWorker() {
     try {
       console.log("Registering service worker...");
 
-      // Register the service worker with the specific scope
+      // Use a relative path with no leading slash
       const registration = await navigator.serviceWorker.register(
-        "/service-worker.js",
+        "service-worker.js",
         {
-          scope: "/",
+          scope: "./",
         }
       );
 
@@ -39,11 +39,12 @@ export async function registerServiceWorker() {
       return registration;
     } catch (error) {
       console.error("Service worker registration failed:", error);
-      throw error;
+      // Don't throw an error here, just log it and continue
+      return null;
     }
   } else {
     console.warn("Service workers are not supported in this browser");
-    throw new Error("Service workers not supported");
+    return null;
   }
 }
 
