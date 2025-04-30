@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import "./App.css";
 import VoiceAssistant from "./pages/VoiceAssistant";
-import { LLMProvider } from "./services/llmService";
+import { LLMProvider } from "./services/LLMService";
 
 // Lazy Imports
 const HomeComponent = lazy(() => import("./pages/Home"));

@@ -1,524 +1,456 @@
-import React, {
-  createContext,
-  useContext,
-  useState,
-  useEffect,
-  useRef,
-} from "react";
-import * as webllm from "@mlc-ai/web-llm";
+import { init, ChatCompletionRequest } from "@mlc-ai/web-llm";
+import { Capacitor } from "@capacitor/core";
+import { Directory, Filesystem } from "@capacitor/filesystem";
+import { useCallback, useEffect, useState } from "react";
+import { openDB } from "idb";
 
-// Create context
-const LLMContext = createContext();
+// Model configuration
+const DEFAULT_MODEL = "Llama-3.1-8B-Instruct";
+const MODEL_OPTIONS = [
+  "Llama-3.1-8B-Instruct",
+  "TinyLlama-1.1B-Chat-v1.0",
+  "Gemma-2B-it",
+];
 
-export const LLMProvider = ({ children }) => {
-  const [llm, setLLM] = useState(null);
-  const [isModelLoaded, setIsModelLoaded] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
-  const [isDownloading, setIsDownloading] = useState(false);
-  const [downloadProgress, setDownloadProgress] = useState(0);
-  const [statusMessage, setStatusMessage] = useState("");
-  const [error, setError] = useState(null);
-  const [isCheckingModel, setIsCheckingModel] = useState(false);
-  const [modelSize, setModelSize] = useState(0);
-  const [platform, setPlatform] = useState("");
-  const abortControllerRef = useRef(null);
+// Database configuration
+const DB_NAME = "llm-app-db";
+const DB_VERSION = 1;
+const MODEL_STORE = "models";
+const CHAT_STORE = "chats";
 
-  const modelName = "RedPajama-INCITE-Chat-3B-v1-q4f32_1"; // Using the supported model from test.txt
-
-  // Log the webllm object to inspect its structure
-  useEffect(() => {
-    console.log("webllm:", webllm);
-  }, []);
-
-  // Initialize LLM
-  // Initialize LLM
-  // Initialize LLM
-  const initializeLLM = async () => {
-    try {
-      setIsLoading(true);
-      setStatusMessage("Initializing LLM...");
-
-      // Check if WebLLM is properly loaded
-      if (!webllm) {
-        throw new Error("webllm library not loaded properly");
+// Initialize IndexedDB
+const initDatabase = async () => {
+  return openDB(DB_NAME, DB_VERSION, {
+    upgrade(db) {
+      if (!db.objectStoreNames.contains(MODEL_STORE)) {
+        db.createObjectStore(MODEL_STORE, { keyPath: "name" });
       }
-
-      console.log("Available webllm methods:", Object.keys(webllm));
-
-      // APPROACH 1: Try with ChatModule first (most reliable)
-      let engine = null;
-
-      if (webllm.ChatModule) {
-        try {
-          console.log("Attempting to create ChatModule");
-          const chat = new webllm.ChatModule({
-            model: modelName,
-            // Explicitly disable service workers
-            useServiceWorker: false,
-          });
-          console.log("ChatModule created successfully");
-          setLLM(chat);
-          setStatusMessage("LLM initialized with ChatModule");
-          return chat;
-        } catch (e) {
-          console.warn("ChatModule creation failed:", e);
-        }
+      if (!db.objectStoreNames.contains(CHAT_STORE)) {
+        db.createObjectStore(CHAT_STORE, {
+          keyPath: "id",
+          autoIncrement: true,
+        });
       }
+    },
+  });
+};
 
-      // APPROACH 2: Try direct MLCEngine creation
-      if (!engine && webllm.MLCEngine) {
-        try {
-          console.log("Attempting to create MLCEngine directly");
-          engine = new webllm.MLCEngine();
-          console.log("Direct MLCEngine created successfully");
-        } catch (e) {
-          console.warn("Direct MLCEngine failed:", e);
-        }
-      }
+class LLMService {
+  constructor() {
+    this.engine = null;
+    this.currentModel = null;
+    this.isModelLoaded = false;
+    this.downloadProgress = 0;
+    this.db = null;
+    this.listeners = {
+      onModelLoadProgress: [],
+      onModelLoaded: [],
+      onError: [],
+    };
 
-      // APPROACH 3: Try function-based creation (newer API)
-      if (!engine && typeof webllm.CreateMLCEngine === "function") {
-        try {
-          console.log("Attempting to create MLCEngine via CreateMLCEngine()");
-          engine = await webllm.CreateMLCEngine();
-          console.log("Function-based MLCEngine created successfully");
-        } catch (e) {
-          console.warn("Function-based MLCEngine failed:", e);
-        }
-      }
+    // Initialize database
+    initDatabase()
+      .then((db) => {
+        this.db = db;
+      })
+      .catch((error) => {
+        this.notifyListeners(
+          "onError",
+          `Failed to initialize database: ${error.message}`
+        );
+      });
 
-      // APPROACH 4: Try web worker but with explicit options
-      if (
-        !engine &&
-        (webllm.WebWorkerMLCEngine ||
-          typeof webllm.CreateWebWorkerMLCEngine === "function")
-      ) {
-        try {
-          console.log("Attempting to create WebWorkerMLCEngine");
+    // Initialize prompt template
+    this.promptTemplate = {
+      template:
+        'You are Luna, a helpful AI assistant developed by nAkprcSoft Technologies (CEO & CTO: Ajit Kumar Pandit) for smart home control and general assistance.\n\nWhen the user asks to control a device (in English or Hindi), always respond with:\n\nsystem: http://nakprciotsystemslabs.local/{room_url}{device_url}{on/off}\nuser: {a short confirmation for the user in their language}\n\n- The system response must contain only the URL, with no extra text or explanation.\n- Use the following mappings to convert any synonym or related word for a room or device to its canonical URL part:\n- For rooms, use:\n { "bedroom": ["bedroom", "master bedroom", "sleeping room"], "living room": ["living room", "hall", "drawing room"] }\n- For devices, use:\n { "light": ["light", "bulb", "lamp"], "fan": ["fan", "ceiling fan"] }\n- For the URL, use:\n room URLs: { "bedroom": "/bed_room/", "living room": "/living_room/" }\n device URLs: { "light": "/light/", "fan": "/fan/" }\n- If the user says any synonym, always use the canonical URL part in the system URL.\n- The URL must always be in the format: http://nakprciotsystemslabs.local/{room_url}{device_url}{on/off} (with slashes between each part).\n- For general questions, do not include a system URL. Instead, respond as Luna, a helpful assistant developed by nAkprcSoft Technologies.\n\nUser: {{USER_INPUT}}\nLuna:',
+      roomname: {
+        bedroom: ["bedroom", "master bedroom", "sleeping room"],
+        "living room": ["living room", "hall", "drawing room"],
+      },
+      devicename: {
+        light: ["light", "bulb", "lamp"],
+        fan: ["fan", "ceiling fan"],
+      },
+      urlroom: {
+        bedroom: "/bed_room/",
+        "living room": "/living_room/",
+      },
+      urldevice: {
+        light: "/light/",
+        fan: "/fan/",
+      },
+    };
+  }
 
-          // First check if there's a constructor
-          if (webllm.WebWorkerMLCEngine) {
-            engine = new webllm.WebWorkerMLCEngine({
-              // Provide explicit worker URL if needed
-              workerUrl: new URL("./llm-worker.js", window.location.origin)
-                .href,
-              // Low thread count to avoid overloading
-              nthread: 1,
-            });
-          }
-          // Otherwise use function creation
-          else if (typeof webllm.CreateWebWorkerMLCEngine === "function") {
-            engine = await webllm.CreateWebWorkerMLCEngine({
-              // Provide explicit worker URL if needed
-              workerUrl: new URL("./llm-worker.js", window.location.origin)
-                .href,
-              // Low thread count to avoid overloading
-              nthread: 1,
-            });
-          }
-
-          console.log("WebWorkerMLCEngine created successfully");
-        } catch (e) {
-          console.warn("WebWorkerMLCEngine failed:", e);
-          // More detailed logging for WebWorker errors
-          console.error("WebWorker Error Details:", {
-            message: e.message,
-            stack: e.stack,
-            cause: e.cause,
-          });
-        }
-      }
-
-      if (!engine) {
-        // Fall back to simplified API from newer versions
-        if (typeof webllm.create === "function") {
-          try {
-            console.log("Attempting simplified 'create' API");
-            const instance = await webllm.create({
-              model: modelName,
-              useWebWorker: true,
-              useServiceWorker: false,
-            });
-            setLLM(instance);
-            setStatusMessage("LLM initialized with simplified API");
-            return instance;
-          } catch (e) {
-            console.warn("Simplified API creation failed:", e);
-          }
-        }
-
-        throw new Error("No suitable MLCEngine could be created");
-      }
-
-      // Create chat instance if engine was successfully created
-      let chat;
-      if (webllm.Chat && typeof webllm.Chat === "function") {
-        chat = new webllm.Chat(engine);
-      } else {
-        // If Chat class doesn't exist, use the engine directly
-        chat = engine;
-      }
-
-      setLLM(chat);
-      setStatusMessage("LLM initialized");
-      return chat;
-    } catch (error) {
-      console.error("Error initializing LLM:", error);
-      setError(error.message);
-      setStatusMessage("Initialization failed");
-      return null;
-    } finally {
-      setIsLoading(false);
+  // Add listener for events
+  addEventListener(event, callback) {
+    if (this.listeners[event]) {
+      this.listeners[event].push(callback);
     }
-  };
+  }
 
-  // Check if model exists
-  const checkModelExists = async () => {
-    try {
-      setIsCheckingModel(true);
-      setStatusMessage("Checking model...");
-
-      // Make sure LLM is initialized
-      let chatInstance = llm;
-      if (!chatInstance) {
-        chatInstance = await initializeLLM();
-        if (!chatInstance) return false;
-      }
-
-      // Check if the model is loaded using multiple approaches
-      try {
-        // Try different methods to check if model is loaded
-        if (typeof chatInstance.getModelInfo === "function") {
-          try {
-            const modelInfo = await chatInstance.getModelInfo(modelName);
-            if (modelInfo) {
-              setModelSize(modelInfo.model_size || 0);
-              setIsModelLoaded(true);
-              setStatusMessage("Model loaded");
-              return true;
-            }
-          } catch (e) {
-            console.warn("getModelInfo failed:", e);
-          }
-        }
-
-        if (typeof chatInstance.listModels === "function") {
-          try {
-            const models = await chatInstance.listModels();
-            if (models && models.includes(modelName)) {
-              setIsModelLoaded(true);
-              setStatusMessage("Model loaded");
-              return true;
-            }
-          } catch (e) {
-            console.warn("listModels failed:", e);
-          }
-        }
-
-        // Check for isReady property
-        if (chatInstance.isReady === true) {
-          setIsModelLoaded(true);
-          setStatusMessage("Model ready");
-          return true;
-        }
-
-        // If none of the checks passed, model is not loaded
-        setIsModelLoaded(false);
-        setStatusMessage("Model not found");
-        return false;
-      } catch (e) {
-        console.error("Model checking error:", e);
-        setIsModelLoaded(false);
-        setStatusMessage("Model not found");
-        return false;
-      }
-    } catch (error) {
-      console.error("Error checking model:", error);
-      setError(error.message);
-      setIsModelLoaded(false);
-      setStatusMessage("Check failed");
-      return false;
-    } finally {
-      setIsCheckingModel(false);
-    }
-  };
-
-  // Download model
-  // Download model
-  const downloadModel = async () => {
-    try {
-      setIsDownloading(true);
-      setError(null);
-      setStatusMessage("Starting model download...");
-
-      let chatInstance = llm;
-      if (!chatInstance) {
-        chatInstance = await initializeLLM();
-        if (!chatInstance) return false;
-      }
-
-      // Log available methods for debugging
-      console.log(
-        "Available methods:",
-        Object.getOwnPropertyNames(Object.getPrototypeOf(chatInstance))
+  // Remove listener
+  removeEventListener(event, callback) {
+    if (this.listeners[event]) {
+      this.listeners[event] = this.listeners[event].filter(
+        (cb) => cb !== callback
       );
+    }
+  }
 
-      // Use the appropriate method depending on the API
-      if (typeof chatInstance.loadModel === "function") {
-        console.log("Using loadModel method");
-        await chatInstance.loadModel(modelName, {
-          progress_callback: (progress) => {
-            setDownloadProgress(progress * 100);
-            setStatusMessage(`Downloading: ${Math.round(progress * 100)}%`);
-          },
-        });
-      } else if (typeof chatInstance.reload === "function") {
-        console.log("Using reload method");
-        await chatInstance.reload(modelName, (progress) => {
-          setDownloadProgress(progress * 100);
-          setStatusMessage(`Downloading: ${Math.round(progress * 100)}%`);
-        });
-      } else if (typeof chatInstance.load === "function") {
-        console.log("Using load method");
-        await chatInstance.load(modelName, (progress) => {
-          setDownloadProgress(progress * 100);
-          setStatusMessage(`Downloading: ${Math.round(progress * 100)}%`);
-        });
+  // Notify all listeners of a specific event
+  notifyListeners(event, data) {
+    if (this.listeners[event]) {
+      this.listeners[event].forEach((callback) => callback(data));
+    }
+  }
+
+  // Initialize the LLM engine
+  async initEngine(modelName = DEFAULT_MODEL) {
+    try {
+      // Check if we already have the model cached
+      const cachedModel = await this.getModelFromCache(modelName);
+
+      if (this.engine) {
+        // If we're changing models, unload the current one
+        if (this.currentModel !== modelName) {
+          this.isModelLoaded = false;
+          this.downloadProgress = 0;
+          // Unload the current model (if WebLLM supports it)
+          try {
+            await this.engine.unload();
+          } catch (e) {
+            // Ignore errors when unloading
+          }
+        } else if (this.isModelLoaded) {
+          // Model is already loaded
+          return this.engine;
+        }
       } else {
-        throw new Error("No suitable method found to load the model");
+        // Initialize the engine
+        this.engine = await init();
       }
 
-      // Verify model was successfully loaded
-      const isLoaded = await checkModelExists();
-      if (!isLoaded) {
-        throw new Error("Model failed to load properly");
+      this.currentModel = modelName;
+
+      // Load the model with progress tracking
+      await this.engine.loadModel(modelName, {
+        progressCallback: (progress) => {
+          this.downloadProgress = progress;
+          this.notifyListeners("onModelLoadProgress", progress);
+        },
+      });
+
+      // Save model to cache if it's not already there
+      if (!cachedModel) {
+        await this.saveModelToCache(modelName);
       }
 
-      setStatusMessage("Model loaded successfully");
+      this.isModelLoaded = true;
+      this.notifyListeners("onModelLoaded", true);
+
+      return this.engine;
+    } catch (error) {
+      this.notifyListeners(
+        "onError",
+        `Failed to initialize LLM engine: ${error.message}`
+      );
+      throw error;
+    }
+  }
+
+  // Save model to IndexedDB
+  async saveModelToCache(modelName) {
+    if (!this.db) return;
+
+    try {
+      // For now just store the model name and timestamp
+      // Actual model weights are handled by WebLLM internally
+      await this.db.put(MODEL_STORE, {
+        name: modelName,
+        timestamp: Date.now(),
+        isDownloaded: true,
+      });
+    } catch (error) {
+      console.error("Failed to save model to cache:", error);
+    }
+  }
+
+  // Get model from IndexedDB
+  async getModelFromCache(modelName) {
+    if (!this.db) return null;
+
+    try {
+      return await this.db.get(MODEL_STORE, modelName);
+    } catch (error) {
+      console.error("Failed to get model from cache:", error);
+      return null;
+    }
+  }
+
+  // List all cached models
+  async listCachedModels() {
+    if (!this.db) return [];
+
+    try {
+      return await this.db.getAll(MODEL_STORE);
+    } catch (error) {
+      console.error("Failed to list cached models:", error);
+      return [];
+    }
+  }
+
+  // Delete a cached model
+  async deleteCachedModel(modelName) {
+    if (!this.db) return false;
+
+    try {
+      await this.db.delete(MODEL_STORE, modelName);
       return true;
     } catch (error) {
-      console.error("Download failed:", error);
-      setError(error.message);
-      setStatusMessage("Download failed");
+      console.error("Failed to delete cached model:", error);
       return false;
-    } finally {
-      setIsDownloading(false);
     }
-  };
+  }
 
-  // Cancel download
-  const cancelDownload = () => {
-    if (llm) {
-      if (typeof llm.unload === "function") {
-        llm.unload();
-      } else if (typeof llm.terminate === "function") {
-        llm.terminate();
-      }
-
-      setIsDownloading(false);
-      setStatusMessage("Download canceled");
-    }
-  };
-
-  // Generate response
-  const generateResponse = async (prompt) => {
-    if (!isModelLoaded) {
-      console.warn("Model not loaded yet, cannot generate response");
-      return null;
+  // Process input with smart home context awareness
+  async processInput(input, options = {}) {
+    if (!this.isModelLoaded) {
+      throw new Error(
+        "Model not loaded. Please initialize the LLM engine first."
+      );
     }
 
     try {
-      setIsLoading(true);
-
-      // Create abort controller
-      const controller = new AbortController();
-      abortControllerRef.current = controller;
-
-      console.log("Sending prompt to LLM:", prompt);
-      console.log(
-        "Available methods for generation:",
-        Object.getOwnPropertyNames(Object.getPrototypeOf(llm))
+      // Format the input using the prompt template
+      const formattedPrompt = this.promptTemplate.template.replace(
+        "{{USER_INPUT}}",
+        input
       );
 
-      // Check which method is available and use it
-      let response;
-      if (typeof llm.chatCompletion === "function") {
-        console.log("Using chatCompletion method");
-        response = await llm.chatCompletion({
-          messages: [{ role: "user", content: prompt }],
-          temperature: 0.7,
-          max_tokens: 1000,
-          stream: false,
-          signal: controller.signal,
+      // Create completion request
+      const request = new ChatCompletionRequest(this.engine, {
+        messages: [{ role: "user", content: formattedPrompt }],
+        temperature: options.temperature || 0.7,
+        max_tokens: options.maxTokens || 512,
+      });
+
+      // Process the response
+      const response = await request.getResponse();
+
+      // Check if this is a smart home control command
+      const systemMatch = response.match(
+        /system:\s*(http:\/\/nakprciotsystemslabs\.local\/[^\s]*)/i
+      );
+      const userMessage = response.match(/user:\s*(.*?)(?=$|\n)/i);
+
+      if (systemMatch && userMessage) {
+        // This is a smart home control command
+        const systemUrl = systemMatch[1];
+        const userResponse = userMessage[1].trim();
+
+        // Save the chat history
+        await this.saveChatHistory({
+          input,
+          systemResponse: systemUrl,
+          userResponse,
+          timestamp: Date.now(),
         });
-      } else if (typeof llm.generate === "function") {
-        console.log("Using generate method");
-        response = await llm.generate(prompt, {
-          temperature: 0.7,
-          max_tokens: 1000,
-          signal: controller.signal,
-        });
-      } else if (typeof llm.chat === "function") {
-        console.log("Using chat method");
-        response = await llm.chat(prompt, {
-          temperature: 0.7,
-          max_tokens: 1000,
-          signal: controller.signal,
-        });
+
+        return {
+          systemUrl,
+          userResponse,
+          isSmartHomeCommand: true,
+        };
       } else {
-        throw new Error("No suitable method found to generate response");
+        // This is a general response
+        await this.saveChatHistory({
+          input,
+          response: response,
+          timestamp: Date.now(),
+        });
+
+        return {
+          response,
+          isSmartHomeCommand: false,
+        };
       }
-
-      console.log("LLM response:", response);
-
-      // Handle different response formats
-      let responseContent = null;
-      if (response?.choices?.[0]?.message?.content) {
-        // Format from test.txt
-        responseContent = response.choices[0].message.content;
-      } else if (response?.content) {
-        // Alternative format
-        responseContent = response.content;
-      } else if (typeof response === "string") {
-        // Simple string response
-        responseContent = response;
-      } else if (response?.text) {
-        // Another possible format
-        responseContent = response.text;
-      } else if (Array.isArray(response) && response[0]?.content) {
-        // Array response format
-        responseContent = response[0].content;
-      }
-
-      if (!responseContent) {
-        console.warn("Empty response from LLM", response);
-        return null;
-      }
-
-      return responseContent;
     } catch (error) {
-      if (error.name === "AbortError") {
-        console.log("LLM generation was aborted");
-        return null;
-      }
-
-      console.error("Error generating response:", error);
-      setError(error.message);
-      return null;
-    } finally {
-      setIsLoading(false);
-      abortControllerRef.current = null;
+      this.notifyListeners(
+        "onError",
+        `Failed to process input: ${error.message}`
+      );
+      throw error;
     }
-  };
+  }
 
-  // Query to LLM function with retry logic
-  const queryToLLM = async (userQuery) => {
+  // Save chat history to IndexedDB
+  async saveChatHistory(chatEntry) {
+    if (!this.db) return;
+
     try {
-      // Check if model is loaded
-      if (!isModelLoaded) {
-        const isAvailable = await checkModelExists();
-        if (!isAvailable) {
-          const downloaded = await downloadModel();
-          if (!downloaded) return null;
-        }
-      }
-
-      // Retry logic for generating responses
-      let response = null;
-      const maxRetries = 3;
-
-      for (let i = 0; i < maxRetries && !response; i++) {
-        try {
-          console.log(`Attempt ${i + 1}/${maxRetries} to generate response`);
-          response = await generateResponse(userQuery);
-
-          if (!response && i < maxRetries - 1) {
-            console.warn(`Retry ${i + 1}/${maxRetries}`);
-            await new Promise((resolve) => setTimeout(resolve, 1000));
-          }
-        } catch (error) {
-          console.error(`Error in attempt ${i + 1}:`, error);
-          if (i < maxRetries - 1) {
-            await new Promise((resolve) => setTimeout(resolve, 1000));
-          }
-        }
-      }
-
-      return response;
+      await this.db.add(CHAT_STORE, chatEntry);
     } catch (error) {
-      console.error("Error in queryToLLM:", error);
-      return null;
+      console.error("Failed to save chat history:", error);
     }
-  };
+  }
 
-  // Stop generation
-  const stopGeneration = () => {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      abortControllerRef.current = null;
-      setIsLoading(false);
-      setStatusMessage("Generation stopped");
+  // Get chat history from IndexedDB
+  async getChatHistory(limit = 50) {
+    if (!this.db) return [];
+
+    try {
+      // Get the last 'limit' entries, sorted by timestamp
+      return await this.db
+        .getAllFromIndex(CHAT_STORE, "timestamp", IDBKeyRange.lowerBound(0))
+        .then((chats) =>
+          chats.sort((a, b) => b.timestamp - a.timestamp).slice(0, limit)
+        );
+    } catch (error) {
+      console.error("Failed to get chat history:", error);
+      return [];
     }
-  };
+  }
 
-  // Initialize LLM on component mount
+  // Clear chat history
+  async clearChatHistory() {
+    if (!this.db) return false;
+
+    try {
+      await this.db.clear(CHAT_STORE);
+      return true;
+    } catch (error) {
+      console.error("Failed to clear chat history:", error);
+      return false;
+    }
+  }
+
+  // Get download progress
+  getDownloadProgress() {
+    return this.downloadProgress;
+  }
+
+  // Check if model is loaded
+  isModelReady() {
+    return this.isModelLoaded;
+  }
+
+  // Get current model
+  getCurrentModel() {
+    return this.currentModel;
+  }
+
+  // Get available models
+  getAvailableModels() {
+    return MODEL_OPTIONS;
+  }
+}
+
+// Create singleton instance
+const llmServiceInstance = new LLMService();
+
+// React hook to use LLM service
+export const useLLMService = () => {
+  const [modelLoaded, setModelLoaded] = useState(
+    llmServiceInstance.isModelLoaded
+  );
+  const [downloadProgress, setDownloadProgress] = useState(
+    llmServiceInstance.downloadProgress
+  );
+  const [error, setError] = useState(null);
+  const [currentModel, setCurrentModel] = useState(
+    llmServiceInstance.currentModel
+  );
+
   useEffect(() => {
-    const init = async () => {
-      const chat = await initializeLLM();
-      if (chat) {
-        // Check if model is already available
-        await checkModelExists();
-      }
+    const onModelLoadProgress = (progress) => {
+      setDownloadProgress(progress);
     };
 
-    init();
+    const onModelLoaded = (loaded) => {
+      setModelLoaded(loaded);
+      setCurrentModel(llmServiceInstance.currentModel);
+    };
 
-    // Cleanup on unmount
+    const onError = (err) => {
+      setError(err);
+    };
+
+    // Add event listeners
+    llmServiceInstance.addEventListener(
+      "onModelLoadProgress",
+      onModelLoadProgress
+    );
+    llmServiceInstance.addEventListener("onModelLoaded", onModelLoaded);
+    llmServiceInstance.addEventListener("onError", onError);
+
+    // Remove event listeners on cleanup
     return () => {
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-      }
-      if (llm) {
-        if (typeof llm.unload === "function") {
-          llm.unload();
-        } else if (typeof llm.terminate === "function") {
-          llm.terminate();
-        }
-      }
+      llmServiceInstance.removeEventListener(
+        "onModelLoadProgress",
+        onModelLoadProgress
+      );
+      llmServiceInstance.removeEventListener("onModelLoaded", onModelLoaded);
+      llmServiceInstance.removeEventListener("onError", onError);
     };
   }, []);
 
-  // Context value
-  const contextValue = {
-    llm,
-    isModelLoaded,
-    isLoading,
-    isDownloading,
+  // Initialize model
+  const initModel = useCallback(async (modelName) => {
+    try {
+      setError(null);
+      await llmServiceInstance.initEngine(modelName);
+    } catch (err) {
+      setError(err.message);
+    }
+  }, []);
+
+  // Process input
+  const processInput = useCallback(async (input, options) => {
+    try {
+      setError(null);
+      return await llmServiceInstance.processInput(input, options);
+    } catch (err) {
+      setError(err.message);
+      throw err;
+    }
+  }, []);
+
+  // Get cached models
+  const getCachedModels = useCallback(async () => {
+    return await llmServiceInstance.listCachedModels();
+  }, []);
+
+  // Delete cached model
+  const deleteCachedModel = useCallback(async (modelName) => {
+    return await llmServiceInstance.deleteCachedModel(modelName);
+  }, []);
+
+  // Get chat history
+  const getChatHistory = useCallback(async (limit) => {
+    return await llmServiceInstance.getChatHistory(limit);
+  }, []);
+
+  // Clear chat history
+  const clearChatHistory = useCallback(async () => {
+    return await llmServiceInstance.clearChatHistory();
+  }, []);
+
+  return {
+    llmService: llmServiceInstance,
+    modelLoaded,
     downloadProgress,
-    statusMessage,
     error,
-    isCheckingModel,
-    modelSize,
-    platform,
-    initializeLLM,
-    checkModelExists,
-    downloadModel,
-    cancelDownload,
-    generateResponse,
-    queryToLLM,
-    stopGeneration,
+    currentModel,
+    availableModels: MODEL_OPTIONS,
+    initModel,
+    processInput,
+    getCachedModels,
+    deleteCachedModel,
+    getChatHistory,
+    clearChatHistory,
   };
-
-  return (
-    <LLMContext.Provider value={contextValue}>{children}</LLMContext.Provider>
-  );
 };
 
-// Custom hook
-export const useLLM = () => {
-  const context = useContext(LLMContext);
-  if (!context) {
-    throw new Error("useLLM must be used within an LLMProvider");
-  }
-  return context;
-};
+export default llmServiceInstance;
