@@ -1,4 +1,3 @@
-// useLLM.js
 import { useState, useEffect, useRef, useCallback } from "react";
 import { LLM } from "../llm.js/llm.js";
 
